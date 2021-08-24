@@ -820,7 +820,7 @@
                 }
             }
 
-            if (sarRatio) {
+            if (sarRatio && sarRatio[0] > 0 && sarRatio[1] > 0) {
               sarScale = sarRatio[0] / sarRatio[1];
             }
           }
@@ -2399,7 +2399,7 @@
         }
 
         if (!remux) {
-          error('Input object must have video and/or audio property. Make sure it is a valid typed array');
+          log('Input object must have video and/or audio property. Make sure it is a valid typed array');
           return;
         }
 
