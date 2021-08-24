@@ -136,7 +136,7 @@ export default class JMuxer extends Event {
             }
         }
         if (!remux) {
-            debug.error('Input object must have video and/or audio property. Make sure it is a valid typed array');
+            debug.log('Input object must have video and/or audio property. Make sure it is a valid typed array');
             return;
         }
         this.remuxController.remux(chunks);

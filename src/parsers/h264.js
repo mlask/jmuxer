@@ -191,7 +191,7 @@ export class H264Parser {
                         break;
                     }
                 }
-                if (sarRatio) {
+                if (sarRatio && sarRatio[0] > 0 && sarRatio[1] > 0) {
                     sarScale = sarRatio[0] / sarRatio[1];
                 }
             }
