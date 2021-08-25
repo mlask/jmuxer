@@ -100,7 +100,28 @@ export class H264Parser {
             frameMbsOnlyFlag,
             scalingListCount,
             fps = 30;
-        decoder.readUByte();
+        decoder.readUByte(); // skip NAL header
+
+        // rewrite NAL
+        let rbsp = [],
+            hdr_bytes = 1,
+            nal_bytes = data.byteLength;
+        for (let i = hdr_bytes; i < nal_bytes; i ++) {
+            if ((i + 2) < nal_bytes && decoder.readBits(24, false) === 0x000003) {
+                rbsp.push(decoder.readBits(8));
+                rbsp.push(decoder.readBits(8));
+                i += 2;
+                
+                // emulation_prevention_three_byte
+                decoder.readBits(8);
+            }
+            else {
+                rbsp.push(decoder.readBits(8));
+            }
+        }
+        decoder.setData(new Uint8Array(rbsp));
+        // end of rewrite data
+        
         profileIdc = decoder.readUByte(); // profile_idc
         profileCompat = decoder.readBits(5); // constraint_set[0-4]_flag, u(5)
         decoder.skipBits(3); // reserved_zero_3bits u(3),

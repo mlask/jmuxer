@@ -14,6 +14,12 @@ export class ExpGolomb {
         return this.bitLength - this.index;
     }
 
+    setData(data) {
+        this.data = data;
+        this.index = 0;
+        this.bitLength = data.byteLength * 8;
+    }
+
     skipBits(size) {
         // console.log(`  skip bits: size=${size}, ${this.index}.`);
         if (this.bitsAvailable < size) {
