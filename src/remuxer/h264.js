@@ -16,6 +16,7 @@ export class H264Remuxer extends BaseRemuxer {
             fragmented: true,
             sps: '',
             pps: '',
+            fps: 30,
             width: 0,
             height: 0,
             timescale: timescale,

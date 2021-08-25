@@ -60,8 +60,11 @@ export default class RemuxController extends Event {
                     let data = {
                         type: type,
                         payload: payload,
-                        dts: track.dts
+                        dts: track.dts,
                     };
+                    if (type === 'video') {
+                        data.fps = track.mp4track.fps;
+                    }
                     this.dispatch('buffer', data);
                     let duration = secToTime(track.dts / this.timescale);
                     debug.log(`put segment (${type}): dts: ${track.dts} frames: ${track.mp4track.samples.length} second: ${duration}`);

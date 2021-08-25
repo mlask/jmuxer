@@ -339,6 +339,11 @@ export default class JMuxer extends Event {
     }
 
     onBuffer(data) {
+        if (typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
+            this.options.fps = data.fps;
+            this.frameDuration = Math.ceil(1000 / data.fps);
+            debug.log(`Changed FPS to ${data.fps}`);
+        }
         if (this.env == 'browser') {
             if (this.bufferControllers && this.bufferControllers[data.type]) {
                 this.bufferControllers[data.type].feed(data.payload);
