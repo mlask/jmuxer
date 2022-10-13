@@ -15,15 +15,20 @@ export default class JMuxer extends Event {
 
     constructor(options) {
         super('jmuxer');
+        this.isReset = false;
         let defaults = {
             node: '',
             mode: 'both', // both, audio, video
-            flushingTime: 1500,
+            flushingTime: 500,
+            maxDelay: 500,
             clearBuffer: true,
             fps: 30,
+            readFpsFromTrack: false, // set true to fetch fps value from NALu
             debug: false,
             onReady: function() {}, // function called when MSE is ready to accept frames
-            onError: function() {}, // function called when jmuxer encounters any buffer related error
+            onError: function() {}, // function called when jmuxer encounters any buffer related errors
+            onMissingVideoFrames: function () {}, // function called when jmuxer encounters any missing video frames
+            onMissingAudioFrames: function () {}, // function called when jmuxer encounters any missing audio frames
         };
         this.options = Object.assign({}, defaults, options);
         this.env = typeof process === 'object' && typeof window === 'undefined' ? 'node' : 'browser';
@@ -40,11 +45,8 @@ export default class JMuxer extends Event {
         this.frameDuration = (1000 / this.options.fps) | 0;
         this.remuxController = new RemuxController(this.env);
         this.remuxController.addTrack(this.options.mode);
-        this.lastCleaningTime = Date.now();
-        this.kfPosition = [];
-        this.kfCounter  = 0;
-        this.pendingUnits = {};
-        this.remainingData = new Uint8Array();
+
+        this.initData();
 
         /* events callback */
         this.remuxController.on('buffer', this.onBuffer.bind(this));
@@ -52,6 +54,14 @@ export default class JMuxer extends Event {
             this.remuxController.on('ready', this.createBuffer.bind(this));
             this.initBrowser();
         }
+    }
+
+    initData() {
+        this.lastCleaningTime = Date.now();
+        this.kfPosition = [];
+        this.kfCounter = 0;
+        this.pendingUnits = {};
+        this.remainingData = new Uint8Array();
         this.startInterval();
     }
 
@@ -122,20 +132,34 @@ export default class JMuxer extends Event {
 
         if (!data || !this.remuxController) return;
         duration = data.duration ? parseInt(data.duration) : 0;
+
         if (data.video) {
             data.video = appendByteArray(this.remainingData, data.video);
             [slices, left] = H264Parser.extractNALu(data.video);
-            if (slices.length > 0) {
-                chunks.video = this.getVideoFrames(slices, duration);
-                remux = true;
-            }
             this.remainingData = left || new Uint8Array();
+
+            if (slices.length > 0) {
+                chunks.video = this.getVideoFrames(slices, duration, data.compositionTimeOffset);
+                remux = true;
+            } else {
+                debug.error('Failed to extract any NAL units from video data:', left);
+                if (typeof this.options.onMissingVideoFrames === 'function') {
+                    this.options.onMissingVideoFrames.call(null, data);
+                }
+                return;
+            }
         }
         if (data.audio) {
-            slices = AACParser.extractAAC(data.audio);
+            slices = this.remuxController.aacParser.extractAAC(data.audio);
             if (slices.length > 0) {
                 chunks.audio = this.getAudioFrames(slices, duration);
                 remux = true;
+            } else {
+                debug.error('Failed to extract audio data from:', data.audio);
+                if (typeof this.options.onMissingAudioFrames === 'function') {
+                    this.options.onMissingAudioFrames.call(null, data);
+                }
+                return;
             }
         }
         if (!remux) {
@@ -145,7 +169,7 @@ export default class JMuxer extends Event {
         this.remuxController.remux(chunks);
     }
 
-    getVideoFrames(nalus, duration) {
+    getVideoFrames(nalus, duration, compositionTimeOffset) {
         let units = [],
             frames = [],
             fd = 0,
@@ -153,9 +177,9 @@ export default class JMuxer extends Event {
             keyFrame = false,
             vcl = false;
         if (this.pendingUnits.units) {
-            units      = this.pendingUnits.units;
-            vcl        = this.pendingUnits.vcl;
-            keyFrame   = this.pendingUnits.keyFrame;
+            units = this.pendingUnits.units;
+            vcl = this.pendingUnits.vcl;
+            keyFrame = this.pendingUnits.keyFrame;
             this.pendingUnits = {};
         }
         for (let nalu of nalus) {
@@ -197,7 +221,9 @@ export default class JMuxer extends Event {
                 });
             } else {
                 let last = frames.length - 1;
-                frames[last].units = frames[last].units.concat(units);
+                if (last >= 0) {
+                    frames[last].units = frames[last].units.concat(units);
+                }
             }
         }
         fd = duration ? duration / frames.length | 0 : this.frameDuration;
@@ -205,6 +231,7 @@ export default class JMuxer extends Event {
 
         frames.map((frame) => {
             frame.duration = fd;
+            frame.compositionTimeOffset = compositionTimeOffset;
             if (tt > 0) {
                 frame.duration++;
                 tt--;
@@ -224,7 +251,7 @@ export default class JMuxer extends Event {
             tt = 0;
 
         for (let units of aacFrames) {
-            frames.push({units});
+            frames.push({ units });
         }
         fd = duration ? duration / frames.length | 0 : this.frameDuration;
         tt = duration ? (duration - (fd * frames.length)) : 0;
@@ -263,6 +290,8 @@ export default class JMuxer extends Event {
     }
 
     reset() {
+        this.stopInterval();
+        this.isReset = true;
         this.node.pause();
         if (this.remuxController) {
             this.remuxController.reset();
@@ -274,6 +303,7 @@ export default class JMuxer extends Event {
             this.bufferControllers = null;
             this.endMSE();
         }
+        this.initData();
         if (this.env == 'browser') {
             this.initBrowser();
         }
@@ -296,12 +326,13 @@ export default class JMuxer extends Event {
     }
 
     startInterval() {
-        this.interval = setInterval(()=>{
-            if (this.bufferControllers) {
-                this.releaseBuffer();
-                this.clearBuffer();
+        this.interval = setInterval(() => {
+            if (this.options.flushingTime) {
+                this.applyAndClearBuffer();
+            } else if (this.bufferControllers) {
+                this.cancelDelay();
             }
-        }, this.options.flushingTime);
+        }, this.options.flushingTime || 1000);
     }
 
     stopInterval() {
@@ -310,9 +341,26 @@ export default class JMuxer extends Event {
         }
     }
 
+    cancelDelay() {
+        if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking) {
+            const end = this.node.buffered.end(0);
+            if (end - this.node.currentTime > (this.options.maxDelay / 1000)) {
+                console.log('delay');
+                this.node.currentTime = end - 0.001;
+            }
+        }
+    }
+
     releaseBuffer() {
         for (let type in this.bufferControllers) {
             this.bufferControllers[type].doAppend();
+        }
+    }
+
+    applyAndClearBuffer() {
+        if (this.bufferControllers) {
+            this.releaseBuffer();
+            this.clearBuffer();
         }
     }
 
@@ -326,7 +374,7 @@ export default class JMuxer extends Event {
             adjacentOffset = this.kfPosition[i];
         }
         if (adjacentOffset) {
-            this.kfPosition = this.kfPosition.filter( kfDelimiter => {
+            this.kfPosition = this.kfPosition.filter(kfDelimiter => {
                 if (kfDelimiter < adjacentOffset) {
                     maxLimit = kfDelimiter;
                 }
@@ -347,29 +395,32 @@ export default class JMuxer extends Event {
     }
 
     onBuffer(data) {
-        if (typeof data.fps !== 'undefined' && this.options.fps !== data.fps) {
-            this.options.fps = data.fps;
+        if (this.options.readFpsFromTrack && typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
             this.fpsUpdated = true;
-            this.frameDuration = 1000 / data.fps;
-            debug.log(`Changed FPS to ${data.fps}`);
+            this.options.fps = data.fps;
+            this.frameDuration = Math.ceil(1000 / data.fps);
+            debug.log(`JMuxer changed FPS to ${data.fps} from track data`);
         }
         if (this.env == 'browser') {
             if (this.bufferControllers && this.bufferControllers[data.type]) {
                 this.bufferControllers[data.type].feed(data.payload);
             }
-        } else if(this.stream) {
+        } else if (this.stream) {
             this.stream.push(data.payload);
+        }
+        if (this.options.flushingTime === 0) {
+            this.applyAndClearBuffer();
         }
     }
 
     /* Events on MSE */
     onMSEOpen() {
         this.mseReady = true;
-        if (typeof this.options.onReady === 'function') {
-            this.options.onReady.call(null);
-        }
         URL.revokeObjectURL(this.url);
-        this.createBuffer();
+        // this.createBuffer();
+        if (typeof this.options.onReady === 'function') {
+            this.options.onReady.call(null, this.isReset);
+        }
     }
 
     onMSEClose() {
@@ -379,8 +430,13 @@ export default class JMuxer extends Event {
 
     onBufferError(data) {
         if (data.name == 'QuotaExceeded') {
+            debug.log(`JMuxer cleaning ${data.type} buffer due to QuotaExceeded error`);
             this.bufferControllers[data.type].initCleanup(this.node.currentTime);
             return;
+        }
+        else if (data.name == 'InvalidStateError') {
+            debug.log('JMuxer is reseting due to InvalidStateError');
+            this.reset();
         }
         else {
             this.endMSE();

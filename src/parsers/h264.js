@@ -99,7 +99,7 @@ export class H264Parser {
             picHeightInMapUnitsMinus1,
             frameMbsOnlyFlag,
             scalingListCount,
-            fps = -1;
+            fps = 0;
         decoder.readUByte(); // skip NAL header
 
         // rewrite NAL
@@ -111,7 +111,6 @@ export class H264Parser {
                 rbsp.push(decoder.readBits(8));
                 rbsp.push(decoder.readBits(8));
                 i += 2;
-                
                 // emulation_prevention_three_byte
                 decoder.readBits(8);
             }
@@ -121,7 +120,7 @@ export class H264Parser {
         }
         decoder.setData(new Uint8Array(rbsp));
         // end of rewrite data
-        
+
         profileIdc = decoder.readUByte(); // profile_idc
         profileCompat = decoder.readBits(5); // constraint_set[0-4]_flag, u(5)
         decoder.skipBits(3); // reserved_zero_3bits u(3),
@@ -241,7 +240,7 @@ export class H264Parser {
             }
         }
         return {
-            fps: fps,
+            fps: fps > 0 ? fps : undefined,
             width: Math.ceil((((picWidthInMbsMinus1 + 1) * 16) - frameCropLeftOffset * 2 - frameCropRightOffset * 2) * sarScale),
             height: ((2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16) - ((frameMbsOnlyFlag ? 2 : 4) * (frameCropTopOffset + frameCropBottomOffset)),
         };
@@ -261,8 +260,7 @@ export class H264Parser {
     parseSPS(sps) {
         var config = H264Parser.readSPS(new Uint8Array(sps));
 
-        if (config.fps > 0)
-            this.track.fps = config.fps;
+        this.track.fps = config.fps;
         this.track.width = config.width;
         this.track.height = config.height;
         this.track.sps = [new Uint8Array(sps)];

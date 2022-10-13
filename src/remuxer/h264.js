@@ -16,7 +16,7 @@ export class H264Remuxer extends BaseRemuxer {
             fragmented: true,
             sps: '',
             pps: '',
-            fps: -1,
+            fps: 30,
             width: 0,
             height: 0,
             timescale: timescale,
@@ -52,6 +52,7 @@ export class H264Remuxer extends BaseRemuxer {
                     size: size,
                     keyFrame: frame.keyFrame,
                     duration: frame.duration,
+                    compositionTimeOffset: frame.compositionTimeOffset
                 });
             }
         }
@@ -82,7 +83,7 @@ export class H264Remuxer extends BaseRemuxer {
             mp4Sample = {
                 size: sample.size,
                 duration: duration,
-                cts: 0,
+                cts: sample.compositionTimeOffset || 0,
                 flags: {
                     isLeading: 0,
                     isDependedOn: 0,
@@ -101,7 +102,7 @@ export class H264Remuxer extends BaseRemuxer {
         }
 
         if (!samples.length) return null;
-        
+
         return new Uint8Array(payload.buffer, 0, this.mp4track.len);
     }
 }
