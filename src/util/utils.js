@@ -22,3 +22,14 @@ export function secToTime(sec) {
     result += (minutes < 10 ? '0' + minutes : minutes) + ':' + (seconds < 10 ? '0' + seconds : seconds);
     return result;
 }
+
+export function isHEVC(payload) {
+    if (payload.length > 1) {
+        let hevc_f = payload[0] >> 7;
+        let hevc_type = (payload[0] >> 1) & 0x3f;
+        let hevc_layerid = (payload[0] & 1) << 5 | (payload[1] >> 3) & 0x1f;
+        let hevc_tid = payload[1] & 0x0f;
+        return hevc_f === 0 && hevc_layerid === 0 && hevc_tid === 1 && (hevc_type === 1 || hevc_type === 19 || hevc_type === 32 || hevc_type === 33 || hevc_type === 34 || hevc_type === 39);
+    }
+    return false;
+}

@@ -1,6 +1,6 @@
 import * as debug from './util/debug';
 import { NALU } from './util/nalu.js';
-import { appendByteArray } from './util/utils.js';
+import { appendByteArray, isHEVC } from './util/utils.js';
 import { H264Parser } from './parsers/h264.js';
 import { AACParser } from './parsers/aac.js';
 import Event from './util/event';
@@ -34,6 +34,9 @@ export default class JMuxer extends Event {
         if (!this.options.fps) {
             this.options.fps = 30;
         }
+
+        this.isHEVC = false;
+        this.fpsUpdated = false;
         this.frameDuration = (1000 / this.options.fps) | 0;
         this.remuxController = new RemuxController(this.env);
         this.remuxController.addTrack(this.options.mode);
@@ -156,6 +159,11 @@ export default class JMuxer extends Event {
             this.pendingUnits = {};
         }
         for (let nalu of nalus) {
+            if (isHEVC(nalu)) {
+                this.isHEVC = true;
+                throw 'HEVC/H265 streams are unsupported';
+            }
+            
             let unit = new NALU(nalu);
             if (unit.type() === NALU.IDR || unit.type() === NALU.NDR) {
                 H264Parser.parseHeader(unit);
@@ -339,9 +347,10 @@ export default class JMuxer extends Event {
     }
 
     onBuffer(data) {
-        if (typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
+        if (typeof data.fps !== 'undefined' && this.options.fps !== data.fps) {
             this.options.fps = data.fps;
-            this.frameDuration = Math.ceil(1000 / data.fps);
+            this.fpsUpdated = true;
+            this.frameDuration = 1000 / data.fps;
             debug.log(`Changed FPS to ${data.fps}`);
         }
         if (this.env == 'browser') {

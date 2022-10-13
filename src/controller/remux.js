@@ -62,7 +62,7 @@ export default class RemuxController extends Event {
                         payload: payload,
                         dts: track.dts,
                     };
-                    if (type === 'video') {
+                    if (type === 'video' && track.mp4track.fps > 0) {
                         data.fps = track.mp4track.fps;
                     }
                     this.dispatch('buffer', data);

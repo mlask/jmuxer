@@ -99,7 +99,7 @@ export class H264Parser {
             picHeightInMapUnitsMinus1,
             frameMbsOnlyFlag,
             scalingListCount,
-            fps = 30;
+            fps = -1;
         decoder.readUByte(); // skip NAL header
 
         // rewrite NAL
@@ -261,7 +261,8 @@ export class H264Parser {
     parseSPS(sps) {
         var config = H264Parser.readSPS(new Uint8Array(sps));
 
-        this.track.fps = config.fps;
+        if (config.fps > 0)
+            this.track.fps = config.fps;
         this.track.width = config.width;
         this.track.height = config.height;
         this.track.sps = [new Uint8Array(sps)];
