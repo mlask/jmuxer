@@ -21,6 +21,7 @@ export default class JMuxer extends Event {
             mode: 'both', // both, audio, video
             flushingTime: 500,
             maxDelay: 500,
+            ignoreDelay: false,
             clearBuffer: true,
             fps: 30,
             readFpsFromTrack: false, // set true to fetch fps value from NALu
@@ -342,11 +343,13 @@ export default class JMuxer extends Event {
     }
 
     cancelDelay() {
-        if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking) {
-            const end = this.node.buffered.end(0);
-            if (end - this.node.currentTime > (this.options.maxDelay / 1000)) {
-                console.log('delay');
-                this.node.currentTime = end - 0.001;
+        if (!this.options.ignoreDelay) {
+            if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking) {
+                const end = this.node.buffered.end(0);
+                if ((end - this.node.currentTime) > (this.options.maxDelay / 1000)) {
+                    console.log('delay');
+                    this.node.currentTime = end - 0.001;
+                }
             }
         }
     }
@@ -398,7 +401,7 @@ export default class JMuxer extends Event {
         if (this.options.readFpsFromTrack && typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
             this.fpsUpdated = true;
             this.options.fps = data.fps;
-            this.frameDuration = Math.ceil(1000 / data.fps);
+            this.frameDuration = (1000 / data.fps);
             debug.log(`JMuxer changed FPS to ${data.fps} from track data`);
         }
         if (this.env == 'browser') {

@@ -39,7 +39,6 @@
     "@rollup/plugin-node-resolve": "^13.0.6",
     "@rollup/plugin-replace": "^3.0.0",
     "@rollup/pluginutils": "^4.0.0",
-    "caniuse-lite": "^1.0.30001223",
     "chai": "^4.2.0",
     "eslint": "^8.2.0",
     "karma": "^6.3.2",
