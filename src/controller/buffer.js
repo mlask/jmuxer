@@ -10,12 +10,12 @@ export default class BufferController extends Event {
         this.queue = new Uint8Array();
         
         this.cleaning = false;
-        this.pendingCleaning = 0;
         this.cleanOffset = 30;
         this.cleanRanges = [];
+        this.pendingCleaning = 0;
         
         this.sourceBuffer = sourceBuffer;
-        this.sourceBuffer.addEventListener('updateend', () => {
+        this.sourceBuffer.addEventListener('updateend', (event) => {
             if (this.pendingCleaning > 0) {
                 this.initCleanup(this.pendingCleaning);
                 this.pendingCleaning = 0;

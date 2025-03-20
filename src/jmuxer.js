@@ -27,6 +27,7 @@ export default class JMuxer extends Event {
             maxDelay: 500,
             timescale: 1000,
             clearBuffer: true,
+            estimateFps: false,
             ignoreDelay: false,
             flushingTime: 500,
             readFpsFromTrack: false, // set true to fetch fps value from NALu
@@ -50,7 +51,7 @@ export default class JMuxer extends Event {
         
         this.fpsUpdated = false;
         this.frameDuration = (this.options.timescale / this.options.fps) | 0;
-        this.remuxController = new RemuxController(this.env, this.options.live);
+        this.remuxController = new RemuxController(this.env, this.options.live, this.options.estimateFps);
         this.remuxController.addTrack(this.options.mode);
         
         this.initData();
@@ -77,6 +78,7 @@ export default class JMuxer extends Event {
         if (typeof this.options.node === 'string' && this.options.node == '') {
             debug.error('no video element were found to render, provide a valid video element');
         }
+        
         this.node = typeof this.options.node === 'string' ? document.getElementById(this.options.node) : this.options.node;
         this.mseReady = false;
         this.setupMSE();
@@ -115,13 +117,17 @@ export default class JMuxer extends Event {
         if (window.MediaSource === window.ManagedMediaSource) {
             try {
                 this.node.removeAttribute('src');
-                // ManagedMediaSource will not open without disableRemotePlayback set to false or source alternatives
-                this.node.disableRemotePlayback = true;
+                this.node.disableRemotePlayback = true; // ManagedMediaSource will not open without disableRemotePlayback set to false or source alternatives
+                
                 const source = document.createElement('source');
                 source.type = 'video/mp4';
                 source.src = this.url;
+                
                 this.node.appendChild(source);
                 this.node.load();
+                this.node.addEventListener('waiting', () => {
+                    this.node.currentTime = this.mediaSource.duration;
+                });
             }
             catch (error) {
                 this.node.src = this.url;
@@ -151,14 +157,14 @@ export default class JMuxer extends Event {
     }
     
     feed (data) {
-        let left,
-            remux = false,
-            chunks = {
-                video: [],
-                audio: []
-            },
-            slices,
-            duration;
+        let left;
+        let remux = false;
+        let chunks = {
+            video: [],
+            audio: []
+        };
+        let slices;
+        let duration;
         
         if (!data || !this.remuxController)
             return;
@@ -176,10 +182,8 @@ export default class JMuxer extends Event {
             }
             else {
                 debug.error('Failed to extract any NAL units from video data:', left);
-                
-                if (typeof this.options.onMissingVideoFrames === 'function') {
+                if (typeof this.options.onMissingVideoFrames === 'function')
                     this.options.onMissingVideoFrames.call(null, data);
-                }
                 return;
             }
         }
@@ -193,11 +197,8 @@ export default class JMuxer extends Event {
             }
             else {
                 debug.error('Failed to extract audio data from:', data.audio);
-                
-                if (typeof this.options.onMissingAudioFrames === 'function') {
+                if (typeof this.options.onMissingAudioFrames === 'function')
                     this.options.onMissingAudioFrames.call(null, data);
-                }
-                
                 return;
             }
         }
@@ -211,12 +212,12 @@ export default class JMuxer extends Event {
     }
     
     getVideoFrames (nalus, duration, compositionTimeOffset) {
-        let fd = 0,
-            tt = 0,
-            vcl = false,
-            units = [],
-            frames = [],
-            keyFrame = false;
+        let fd = 0;
+        let tt = 0;
+        let vcl = false;
+        let units = [];
+        let frames = [];
+        let keyFrame = false;
         
         if (this.pendingUnits.units) {
             vcl = this.pendingUnits.vcl;
@@ -478,10 +479,12 @@ export default class JMuxer extends Event {
     onMSEOpen () {
         this.mseReady = true;
         URL.revokeObjectURL(this.url);
-        // this.createBuffer();
-        if (typeof this.options.onReady === 'function') {
+        
+        if (typeof this.options.onReady === 'function')
             this.options.onReady.call(null, this.isReset, this.mediaSource);
-        }
+        
+        if (this.remuxController.duration === -1)
+            this.mediaSource.duration = Infinity;
     }
     
     onMSEClose () {

@@ -6,18 +6,19 @@ import { appendByteArray, secToTime } from '../util/utils.js';
 import Event from '../util/event';
 
 export default class RemuxController extends Event {
-    constructor (env, live) {
+    constructor (env, live = false, estimate_fps = false) {
         super('remuxer');
         
-        this.seq = 1;
         this.env = env;
+        this.seq = 1;
+        this.live = live;
         this.tracks = {};
         this.duration = live ? -1 : 0;
         this.aacParser = null;
         this.timescale = 1000;
         this.trackTypes = [];
         this.initialized = false;
-        this.estimate_fps = null;
+        this.estimate_fps = estimate_fps;
     }
     
     addTrack (type) {
@@ -88,6 +89,23 @@ export default class RemuxController extends Event {
                     
                     this.seq ++;
                 }
+                else {
+                    // empty `moof` for continuity
+                    const moof = MP4.moof(this.seq, track.dts, track.mp4track);
+                    const data = {
+                        dts: track.dts,
+                        type: type,
+                        payload: moof,
+                    };
+                    
+                    if (type === 'video') {
+                        data.fps = track.mp4track.fps;
+                        data.duration = this.duration;
+                        data.timescale = this.timescale;
+                    }
+                    
+                    this.dispatch('buffer', data);
+                }
             }
         }
     }
@@ -145,23 +163,26 @@ export default class RemuxController extends Event {
     }
     
     #estimateFPS () {
-        if (this.estimate_fps === null) {
-            this.estimate_fps = {
+        if (!this.estimate_fps)
+            return;
+        
+        if (typeof this._estimate_fps === 'undefined') {
+            this._estimate_fps = {
                 fps: 0,
                 perf: performance.now(),
                 frames: 0,
             };
         }
         
-        this.estimate_fps.frames ++;
+        this._estimate_fps.frames ++;
         
-        if (this.estimate_fps.frames > 1)
-            this.estimate_fps.fps = Math.round(this.estimate_fps.frames / ((performance.now() - this.estimate_fps.perf) / 1000), 2);
+        if (this._estimate_fps.frames > 1)
+            this._estimate_fps.fps = Math.round(this._estimate_fps.frames / ((performance.now() - this._estimate_fps.perf) / 1000), 2);
         
-        if (this.estimate_fps.frames > 10 && this.estimate_fps.fps > 0 && this.estimate_fps.fps !== this.tracks.video.fps)
+        if (this._estimate_fps.frames > 10 && this._estimate_fps.fps > 0 && this._estimate_fps.fps !== this.tracks.video.fps)
         {
-            console.log(`RemuxController: set estimated fps=${this.estimate_fps.fps} (video.fps=${this.tracks.video.fps})`);
-            this.tracks.video.fps = this.estimate_fps.fps;
+            debug.log(`remux: set estimated fps=${this._estimate_fps.fps} (video.fps=${this.tracks.video.fps})`);
+            this.tracks.video.fps = this._estimate_fps.fps;
         }
     }
 }

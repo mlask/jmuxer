@@ -417,6 +417,8 @@ export class H265Parser {
             frame_rate: {
                 fixed: fixed_pic_rate_general_flag ? 1 : 0,
                 fps: vui_time_scale / vui_num_units_in_tick,
+                vui_time_scale,
+                vui_num_units_in_tick,
             },
             chroma_format_idc,
             bit_depth_luma_minus8,
@@ -456,7 +458,6 @@ export class H265Parser {
             return false;
         
         let push = false;
-        let isKeyframe = false;
         
         switch (unit.getType()) {
             case H265NalUnit.NALU_TYPE_TRAIL_N:
@@ -476,7 +477,7 @@ export class H265Parser {
             case H265NalUnit.NALU_TYPE_IDR_N_LP:
             case H265NalUnit.NALU_TYPE_CRA_NUT:
                 push = true;
-                isKeyframe = true;
+                // keyframe!
                 break;
             
             case H265NalUnit.NALU_TYPE_VPS_NUT:
@@ -516,7 +517,7 @@ export class H265Parser {
                 break;
             
             default:
-                debug.log(`H265Parser: unsupported NAL type: ${unit.getType()}`);
+                console.log(`H265Parser: unsupported NAL type: ${unit.getType()}`);
         }
         
         return push;
@@ -531,8 +532,11 @@ export class H265Parser {
     }
     
     parseSEI (unit) {
-        const data = this.#discardEPB(unit.getPayload());
+        const sei = new Uint8Array(unit.getPayload());
+        const data = this.#discardEPB(sei);
         let offset = 0;
+        
+        this.track.sei = [sei];
         
         while (offset < data.length) {
             let payloadType = 0;
@@ -576,15 +580,21 @@ export class H265Parser {
         }
         let profile_compatibility_flags_string = profile_compatibility_rev.toString(16);
         if (config.general_profile_idc === 1 && profile_compatibility_flags_string === '2') {
-            profile_compatibility_flags_string = '6';
+            profile_compatibility_flags_string = '6'; // The value after the second period is 6 instead of 2 because according to ISO/IEC 23008-2 a Main Profile bitstream should also be marked as compatible to the Main 10 Profile
         }
         const tier_flag_string = config.general_tier_flag ? 'H' : 'L';
+        let constraint_flags = '';
+        for (let i = 0; i < 6; i ++) {
+            constraint_flags += `.${('0' + config.general_constraint_indicator_flags[i].toString(16).toUpperCase()).slice(-2)}`;
+        }
         
         this.track.fps = config.frame_rate.fps || this.track.fps;
-        this.track.codec = `hvc1.${profile_space_string}${config.general_profile_idc}.${profile_compatibility_flags_string}.${tier_flag_string}${config.general_level_idc}.B0`;
+        this.track.codec = `hvc1.${profile_space_string}${config.general_profile_idc}.${profile_compatibility_flags_string}.${tier_flag_string}${config.general_level_idc}${constraint_flags.replace(/(\.00)+?$/g, '')}`;
         this.track.width = config.width;
         this.track.height = config.height;
         this.track.segmentCodec = 'hevc';
+        
+        console.log(`H265Parser: codec: ${this.track.codec}`);
     }
     
     parseVPS (data) {
@@ -702,8 +712,13 @@ export class H265NalUnit {
     
     constructor (data) {
         this.type = (data[0] >> 1) & 0x3f;
+        this.isfmb = false;
         this.isvcl = this.type >= H265NalUnit.NALU_TYPE_TRAIL_N && this.type <= H265NalUnit.NALU_TYPE_RSV_VCL31;
         this.payload = data;
+        
+        if ((this.type >= H265NalUnit.NALU_TYPE_TRAIL_N && this.type <= H265NalUnit.NALU_TYPE_RASL_R) ||
+            (this.type >= H265NalUnit.NALU_TYPE_BLA_W_LP && this.type <= H265NalUnit.NALU_TYPE_CRA_NUT))
+            this.#parseHeader();
     }
     
     getData () {
@@ -738,5 +753,14 @@ export class H265NalUnit {
     
     getPayloadSize () {
         return this.payload.byteLength;
+    }
+    
+    #parseHeader () {
+        const eg = new ExpGolomb(this.payload);
+        
+        // skip NALu type
+        eg.readUByte(2);
+        
+        this.isfmb = eg.readBoolean(); // first_slice_segment_in_pic_flag
     }
 }

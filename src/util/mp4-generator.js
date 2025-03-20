@@ -50,8 +50,7 @@ export class MP4 {
             smhd: [],
         };
         
-        var i;
-        for (i in MP4.types) {
+        for (let i in MP4.types) {
             if (MP4.types.hasOwnProperty(i)) {
                 MP4.types[i] = [
                     i.charCodeAt(0),
@@ -62,7 +61,7 @@ export class MP4 {
             }
         }
         
-        var videoHdlr = new Uint8Array([
+        const videoHdlr = new Uint8Array([
             0x00, // version 0
             0x00, 0x00, 0x00, // flags
             0x00, 0x00, 0x00, 0x00, // pre_defined
@@ -75,7 +74,7 @@ export class MP4 {
             0x64, 0x6c, 0x65, 0x72, 0x00, // name: 'VideoHandler'
         ]);
         
-        var audioHdlr = new Uint8Array([
+        const audioHdlr = new Uint8Array([
             0x00, // version 0
             0x00, 0x00, 0x00, // flags
             0x00, 0x00, 0x00, 0x00, // pre_defined
@@ -93,7 +92,7 @@ export class MP4 {
             audio: audioHdlr,
         };
         
-        var dref = new Uint8Array([
+        const dref = new Uint8Array([
             0x00, // version 0
             0x00, 0x00, 0x00, // flags
             0x00, 0x00, 0x00, 0x01, // entry_count
@@ -103,7 +102,7 @@ export class MP4 {
             0x00, 0x00, 0x01, // entry_flags
         ]);
         
-        var stco = new Uint8Array([
+        const stco = new Uint8Array([
             0x00, // version
             0x00, 0x00, 0x00, // flags
             0x00, 0x00, 0x00, 0x00, // entry_count
@@ -137,12 +136,31 @@ export class MP4 {
             0x00, 0x00, 0x00, 0x01,
         ]);// entry_count
         
-        var majorBrand = new Uint8Array([105, 115, 111, 109]); // isom
-        var avc1Brand = new Uint8Array([97, 118, 99, 49]); // avc1
-        var minorVersion = new Uint8Array([0, 0, 0, 1]);
-            
-        MP4.FTYP = MP4.box(MP4.types.ftyp, majorBrand, minorVersion, majorBrand, avc1Brand);
-        MP4.DINF = MP4.box(MP4.types.dinf, MP4.box(MP4.types.dref, dref));
+        const major_brand = 'iso6';//'isom';
+        const minor_version = 1;
+        const compatible_brands = [
+            major_brand,
+            //'avc1',
+            'dash',
+            'msdh',
+        ];
+        
+        MP4.FTYP = MP4.box(
+            MP4.types.ftyp,
+            new Uint8Array([
+                ...Array.from(major_brand).map(letter => letter.charCodeAt(0)),
+                ...this.breakNumberIntoBytes(minor_version, 4),
+                ...Array.from(compatible_brands.join('')).map(letter => letter.charCodeAt(0)),
+            ]),
+        );
+        
+        MP4.DINF = MP4.box(
+            MP4.types.dinf,
+            MP4.box(
+                MP4.types.dref,
+                dref,
+            ),
+        );
     }
     
     static box (type, ...payload) {
@@ -183,9 +201,8 @@ export class MP4 {
     }
     
     static mdhd (timescale, duration) {
-        //duration *= timescale;
-        const upperWordDuration = Math.floor(duration / (MP4.UINT32_MAX + 1));
-        const lowerWordDuration = Math.floor(duration % (MP4.UINT32_MAX + 1));
+        const upperWordDuration = duration === -1 ? 0xffffffff : Math.floor(duration / (MP4.UINT32_MAX + 1));
+        const lowerWordDuration = duration === -1 ? 0xffffffff : Math.floor(duration % (MP4.UINT32_MAX + 1));
         
         return MP4.box(MP4.types.mdhd, new Uint8Array([
             0x01, // version 1
@@ -292,9 +309,8 @@ export class MP4 {
     }
     
     static mvhd (timescale, duration) {
-        //duration *= timescale;
-        const upperWordDuration = Math.floor(duration / (MP4.UINT32_MAX + 1));
-        const lowerWordDuration = Math.floor(duration % (MP4.UINT32_MAX + 1));
+        const upperWordDuration = duration === -1 ? 0xffffffff : Math.floor(duration / (MP4.UINT32_MAX + 1));
+        const lowerWordDuration = duration === -1 ? 0xffffffff : Math.floor(duration % (MP4.UINT32_MAX + 1));
         
         return MP4.box(
             MP4.types.mvhd,
@@ -611,8 +627,8 @@ export class MP4 {
         const width = track.width || 0;
         const height = track.height || 0;
         const duration = (track.duration || 0) * (track.timescale || 0);
-        const upperWordDuration = Math.floor(duration / (MP4.UINT32_MAX + 1));
-        const lowerWordDuration = Math.floor(duration % (MP4.UINT32_MAX + 1));
+        const upperWordDuration = track.duration === -1 ? 0xffffffff : Math.floor(duration / (MP4.UINT32_MAX + 1));
+        const lowerWordDuration = track.duration === -1 ? 0xffffffff : Math.floor(duration % (MP4.UINT32_MAX + 1));
         
         return MP4.box(
             MP4.types.tkhd,
@@ -651,8 +667,8 @@ export class MP4 {
     }
     
     static traf (track, baseMediaDecodeTime) {
-        const sampleDependencyTable = MP4.sdtp(track);
         const id = track.id;
+        const sampleDependencyTable = MP4.sdtp(track);
         const upperWordBaseMediaDecodeTime = Math.floor(baseMediaDecodeTime / (MP4.UINT32_MAX + 1));
         const lowerWordBaseMediaDecodeTime = Math.floor(baseMediaDecodeTime % (MP4.UINT32_MAX + 1));
       
@@ -791,21 +807,21 @@ export class MP4 {
                 0xf8 | (track.params.bit_depth_chroma_minus8 & 0x07),
                 0x00, 0x00, // avgFrameRate
                 ((track.params.frame_rate.fixed & 0x03) << 6) | ((track.params.num_temporal_layers & 0x07) << 3) | ((track.params.temporal_id_nested ? 1 : 0) << 2) | 3,
-                0x03,
+                0x03, // numArrays
                 ...new Uint8Array([
-                    0x20, // NALU_TYPE_VPS_NUT
+                    0x80 | 0x20, // NALU_TYPE_VPS_NUT
                     ...this.breakNumberIntoBytes(track.vps.length, 2),
                     ...this.breakNumberIntoBytes(track.vps[0].byteLength, 2), // TODO: all vps
                     ...track.vps[0],
                 ]),
                 ...new Uint8Array([
-                    0x21, // NALU_TYPE_SPS_NUT,
+                    0x80 | 0x21, // NALU_TYPE_SPS_NUT,
                     ...this.breakNumberIntoBytes(track.sps.length, 2),
                     ...this.breakNumberIntoBytes(track.sps[0].byteLength, 2), // TODO: all sps
                     ...track.sps[0],
                 ]),
                 ...new Uint8Array([
-                    0x22, // NALU_TYPE_PPS_NUT
+                    0x80 | 0x22, // NALU_TYPE_PPS_NUT
                     ...this.breakNumberIntoBytes(track.pps.length, 2),
                     ...this.breakNumberIntoBytes(track.pps[0].byteLength, 2), // TODO: all pps
                     ...track.pps[0],

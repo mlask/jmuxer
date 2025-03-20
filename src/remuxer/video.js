@@ -13,9 +13,9 @@ export class VideoRemuxer extends BaseRemuxer {
             id: BaseRemuxer.getTrackID(),
             fps: 30,
             len: 0,
-            pps: '',
-            sps: '',
-            vps: '',
+            pps: undefined,
+            sps: undefined,
+            vps: undefined,
             type: 'video',
             width: 0,
             height: 0,
@@ -57,6 +57,7 @@ export class VideoRemuxer extends BaseRemuxer {
             
             if (units.length > 0 && this.readyToDecode) {
                 this.mp4track.len += size;
+                
                 this.samples.push({
                     size: size,
                     units: units,
@@ -109,6 +110,7 @@ export class VideoRemuxer extends BaseRemuxer {
                 payload.set(unit.getData(), offset);
                 offset += unit.getSize();
             }
+            
             samples.push(mp4Sample);
         }
         
