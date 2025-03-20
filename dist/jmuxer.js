@@ -398,7 +398,6 @@
       _classPrivateMethodInitSpec(this, _H265Parser_brand);
       this.track = remuxer.mp4track;
       this.remuxer = remuxer;
-      this.estimate_fps = null;
     }
     return _createClass(H265Parser, [{
       key: "readPPS",
@@ -795,7 +794,6 @@
       value: function parseNAL(unit) {
         if (!unit) return false;
         var push = false;
-        var isKeyframe = false;
         switch (unit.getType()) {
           case H265NalUnit.NALU_TYPE_TRAIL_N:
           case H265NalUnit.NALU_TYPE_TRAIL_R:
@@ -813,7 +811,6 @@
           case H265NalUnit.NALU_TYPE_IDR_N_LP:
           case H265NalUnit.NALU_TYPE_CRA_NUT:
             push = true;
-            isKeyframe = true;
             break;
           case H265NalUnit.NALU_TYPE_VPS_NUT:
             if (!this.track.vps) {
@@ -842,9 +839,8 @@
             push = true;
             break;
           default:
-            console.log('H265Parser: unsupported NAL type!', unit.getType());
+            log("H265Parser: unsupported NAL type: ".concat(unit.getType()));
         }
-        if (isKeyframe) _assertClassBrand(_H265Parser_brand, this, _estimateFPS).call(this);
         return push;
       }
     }, {
@@ -858,7 +854,6 @@
     }, {
       key: "parseSEI",
       value: function parseSEI(unit) {
-        console.log("parseSEI - unit type=".concat(unit.getType(), " payloadSize=").concat(unit.getPayloadSize()));
         var data = _assertClassBrand(_H265Parser_brand, this, _discardEPB).call(this, unit.getPayload());
         var offset = 0;
         while (offset < data.length) {
@@ -875,11 +870,11 @@
             if (_byte2 !== 0xff) break;
           }
           if (offset + payloadSize > data.length) {
-            console.log("parseSEI - invalid SEI size (payloadType=".concat(payloadType, ", payloadSize=").concat(payloadSize, ", data.length=").concat(data.length, ")"));
+            log("parseSEI - invalid SEI size (payloadType=".concat(payloadType, ", payloadSize=").concat(payloadSize, ", data.length=").concat(data.length, ")"));
             break;
           }
           var payloadData = data.subarray(offset, offset + payloadSize);
-          console.log("parseSEI - payloadType=".concat(payloadType, ", payloadSize=").concat(payloadSize, ", payloadData"), payloadData);
+          log("parseSEI - payloadType=".concat(payloadType, ", payloadSize=").concat(payloadSize, ", payloadData"), payloadData);
           offset += payloadSize;
         }
       }
@@ -949,19 +944,6 @@
       newData[i] = data[sourceIndex];
     }
     return newData;
-  }
-  function _estimateFPS() {
-    if (this.estimate_fps === null) {
-      this.estimate_fps = {
-        fps: 0,
-        perf: performance.now(),
-        frames: 0
-      };
-    }
-    this.estimate_fps.frames++;
-    if (this.estimate_fps.frames > 1) this.estimate_fps.fps = Math.round((performance.now() - this.estimate_fps.perf) / this.estimate_fps.frames / 1000, 2);
-    if (this.estimate_fps.fps > 0 && this.track.fps !== this.estimate_fps.fps) this.track.fps = this.estimate_fps.fps;
-    console.log("H265Parser: estimateFPS fps=".concat(this.estimate_fps.fps, " (fps=").concat(this.track.fps, ")"));
   }
   var H265NalUnit = /*#__PURE__*/function () {
     function H265NalUnit(data) {
@@ -1240,7 +1222,7 @@
             push = true;
             break;
           default:
-            console.log('H264Parser: unsupported NAL type!', unit.getType());
+            log("H264Parser: unsupported NAL type: ".concat(unit.getType()));
         }
         return push;
       }
@@ -1254,7 +1236,7 @@
       value: function parseSPS(data) {
         var sps = new Uint8Array(data);
         var config = this.readSPS(sps);
-        this.track.fps = config.fps;
+        this.track.fps = config.fps || this.track.fps;
         this.track.sps = [sps];
         this.track.codec = 'avc1.';
         this.track.width = config.width;
@@ -1376,9 +1358,9 @@
         config[1] |= (sampleIndex & 0x01) << 7;
         config[1] |= channelCount << 3;
         this.track.codec = 'mp4a.40.' + objectType;
+        this.track.config = config;
         this.track.segmentCodec = 'aac';
         this.track.channelCount = channelCount;
-        this.track.config = config;
         this.remuxer.readyToDecode = true;
       }
     }], [{
@@ -1484,11 +1466,6 @@
       key: "UINT32_MAX",
       get: function get() {
         return Math.pow(2, 32) - 1;
-      }
-    }, {
-      key: "USE_M2TS_ADVANCED_CODECS",
-      get: function get() {
-        return true;
       }
     }, {
       key: "init",
@@ -1688,7 +1665,6 @@
     }, {
       key: "mdia",
       value: function mdia(track) {
-        console.log('mdia', track);
         return MP4.box(MP4.types.mdia, MP4.mdhd(track.timescale || 0, track.duration || 0), MP4.hdlr(track.type), MP4.minf(track));
       }
     }, {
@@ -1699,7 +1675,6 @@
     }, {
       key: "minf",
       value: function minf(track) {
-        console.log('minf', track);
         if (track.type === 'audio') {
           return MP4.box(MP4.types.minf, MP4.box(MP4.types.smhd, MP4.SMHD), MP4.DINF, MP4.stbl(track));
         } else {
@@ -1779,7 +1754,6 @@
     }, {
       key: "stbl",
       value: function stbl(track) {
-        console.log('stbl', track);
         return MP4.box(MP4.types.stbl, MP4.stsd(track), MP4.box(MP4.types.stts, MP4.STTS), MP4.box(MP4.types.stsc, MP4.STSC), MP4.box(MP4.types.stsz, MP4.STSZ), MP4.box(MP4.types.stco, MP4.STCO));
       }
     }, {
@@ -1941,13 +1915,12 @@
     }, {
       key: "stsd",
       value: function stsd(track) {
-        console.log('stsd', track);
         var segmentCodec = track.segmentCodec;
         if (track.type === 'audio') {
           if (segmentCodec === 'aac') {
             return MP4.box(MP4.types.stsd, MP4.STSD, MP4.mp4a(track));
           }
-          if (MP4.USE_M2TS_ADVANCED_CODECS && segmentCodec === 'ac3' && track.config) {
+          if (segmentCodec === 'ac3' && track.config) {
             return MP4.box(MP4.types.stsd, MP4.STSD, MP4.ac3(track));
           }
           if (segmentCodec === 'mp3' && track.codec === 'mp3') {
@@ -1958,7 +1931,7 @@
             if (segmentCodec === 'avc') {
               return MP4.box(MP4.types.stsd, MP4.STSD, MP4.avc1(track));
             }
-            if (MP4.USE_M2TS_ADVANCED_CODECS && segmentCodec === 'hevc' && track.vps) {
+            if (segmentCodec === 'hevc' && track.vps) {
               return MP4.box(MP4.types.stsd, MP4.STSD, MP4.hvc1(track));
             }
           } else {
@@ -2079,7 +2052,6 @@
     }, {
       key: "hvc1",
       value: function hvc1(track) {
-        if (!MP4.USE_M2TS_ADVANCED_CODECS) return new Uint8Array();
         var hvcc = MP4.box(MP4.types.hvcC, new Uint8Array([0x01, (track.params.general_profile_space & 0x03) << 6 | (track.params.general_tier_flag ? 1 : 0) << 5 | track.params.general_profile_idc & 0x1f].concat(_toConsumableArray(track.params.general_profile_compatibility_flags), _toConsumableArray(track.params.general_constraint_indicator_flags), [track.params.general_level_idc, 0xf0 | (track.params.min_spatial_segmentation_idc & 0x0f00) >> 8, track.params.min_spatial_segmentation_idc & 0xff, 0xfc | track.params.parallelism_type & 0x03, 0xfc | track.params.chroma_format_idc & 0x03, 0xf8 | track.params.bit_depth_luma_minus8 & 0x07, 0xf8 | track.params.bit_depth_chroma_minus8 & 0x07, 0x00, 0x00,
         // avgFrameRate
         (track.params.frame_rate.fixed & 0x03) << 6 | (track.params.num_temporal_layers & 0x07) << 3 | (track.params.temporal_id_nested ? 1 : 0) << 2 | 3, 0x03], _toConsumableArray(new Uint8Array([0x20].concat(_toConsumableArray(this.breakNumberIntoBytes(track.vps.length, 2)), _toConsumableArray(this.breakNumberIntoBytes(track.vps[0].byteLength, 2)), _toConsumableArray(track.vps[0])))), _toConsumableArray(new Uint8Array([0x21].concat(_toConsumableArray(this.breakNumberIntoBytes(track.sps.length, 2)), _toConsumableArray(this.breakNumberIntoBytes(track.sps[0].byteLength, 2)), _toConsumableArray(track.sps[0])))), _toConsumableArray(new Uint8Array([0x22].concat(_toConsumableArray(this.breakNumberIntoBytes(track.pps.length, 2)), _toConsumableArray(this.breakNumberIntoBytes(track.pps[0].byteLength, 2)), _toConsumableArray(track.pps[0])))))));
@@ -2327,7 +2299,7 @@
                 if (this.parser.parseNAL(unit)) {
                   units.push(unit);
                   size += unit.getSize();
-                } else console.log('parseNAL failed!');
+                } else log('parseNAL failed!');
               }
             } catch (err) {
               _iterator2.e(err);
@@ -2404,11 +2376,13 @@
     }]);
   }(BaseRemuxer);
 
+  var _RemuxController_brand = /*#__PURE__*/new WeakSet();
   var RemuxController = /*#__PURE__*/function (_Event) {
     function RemuxController(env, live) {
       var _this;
       _classCallCheck(this, RemuxController);
       _this = _callSuper(this, RemuxController, ['remuxer']);
+      _classPrivateMethodInitSpec(_this, _RemuxController_brand);
       _this.seq = 1;
       _this.env = env;
       _this.tracks = {};
@@ -2417,6 +2391,7 @@
       _this.timescale = 1000;
       _this.trackTypes = [];
       _this.initialized = false;
+      _this.estimate_fps = null;
       return _this;
     }
     _inherits(RemuxController, _Event);
@@ -2478,11 +2453,10 @@
               if (pay && pay.byteLength) {
                 var moof = MP4.moof(this.seq, track.dts, track.mp4track);
                 var mdat = MP4.mdat(pay);
-                var payload = appendByteArray(moof, mdat);
                 var data = {
                   dts: track.dts,
                   type: type,
-                  payload: payload
+                  payload: appendByteArray(moof, mdat)
                 };
                 if (type === 'video') {
                   data.fps = track.mp4track.fps;
@@ -2490,9 +2464,9 @@
                   data.timescale = this.timescale;
                 }
                 this.dispatch('buffer', data);
+                _assertClassBrand(_RemuxController_brand, this, _estimateFPS).call(this);
                 var duration = secToTime(track.dts / this.timescale);
                 log("put segment (".concat(type, "): dts: ").concat(track.dts, " frames: ").concat(track.mp4track.samples.length, " second: ").concat(duration));
-                console.log("put segment (".concat(type, "): dts: ").concat(track.dts, " frames: ").concat(track.mp4track.samples.length, " second: ").concat(duration));
                 track.flush();
                 this.seq++;
               }
@@ -2577,6 +2551,21 @@
       }
     }]);
   }(Event);
+  function _estimateFPS() {
+    if (this.estimate_fps === null) {
+      this.estimate_fps = {
+        fps: 0,
+        perf: performance.now(),
+        frames: 0
+      };
+    }
+    this.estimate_fps.frames++;
+    if (this.estimate_fps.frames > 1) this.estimate_fps.fps = Math.round(this.estimate_fps.frames / ((performance.now() - this.estimate_fps.perf) / 1000), 2);
+    if (this.estimate_fps.frames > 10 && this.estimate_fps.fps > 0 && this.estimate_fps.fps !== this.tracks.video.fps) {
+      console.log("RemuxController: set estimated fps=".concat(this.estimate_fps.fps, " (video.fps=").concat(this.tracks.video.fps, ")"));
+      this.tracks.video.fps = this.estimate_fps.fps;
+    }
+  }
 
   var BufferController = /*#__PURE__*/function (_Event) {
     function BufferController(sourceBuffer, type) {

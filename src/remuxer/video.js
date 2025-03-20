@@ -52,7 +52,7 @@ export class VideoRemuxer extends BaseRemuxer {
                     size += unit.getSize();
                 }
                 else
-                    console.log('parseNAL failed!');
+                    debug.log('parseNAL failed!');
             }
             
             if (units.length > 0 && this.readyToDecode) {

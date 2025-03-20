@@ -5,7 +5,6 @@
 
 export class MP4 {
     static get UINT32_MAX () { return Math.pow(2, 32) - 1; }
-    static get USE_M2TS_ADVANCED_CODECS () { return true; }
     
     static init () {
         MP4.types = {
@@ -204,7 +203,6 @@ export class MP4 {
     }
     
     static mdia (track) {
-        console.log('mdia', track);
         return MP4.box(
             MP4.types.mdia,
             MP4.mdhd(track.timescale || 0, track.duration || 0),
@@ -225,7 +223,6 @@ export class MP4 {
     }
     
     static minf (track) {
-        console.log('minf', track);
         if (track.type === 'audio') {
             return MP4.box(
                 MP4.types.minf,
@@ -359,7 +356,6 @@ export class MP4 {
     }
     
     static stbl (track) {
-        console.log('stbl', track);
         return MP4.box(
             MP4.types.stbl,
             MP4.stsd(track),
@@ -557,7 +553,6 @@ export class MP4 {
     }
     
     static stsd (track) {
-        console.log('stsd', track);
         const segmentCodec = track.segmentCodec;
         
         if (track.type === 'audio') {
@@ -569,7 +564,7 @@ export class MP4 {
                 );
             }
             
-            if (MP4.USE_M2TS_ADVANCED_CODECS && segmentCodec === 'ac3' && track.config) {
+            if (segmentCodec === 'ac3' && track.config) {
                 return MP4.box(
                     MP4.types.stsd,
                     MP4.STSD,
@@ -595,7 +590,7 @@ export class MP4 {
                     );
                 }
                 
-                if (MP4.USE_M2TS_ADVANCED_CODECS && segmentCodec === 'hevc' && track.vps) {
+                if (segmentCodec === 'hevc' && track.vps) {
                     return MP4.box(
                         MP4.types.stsd,
                         MP4.STSD,
@@ -780,9 +775,6 @@ export class MP4 {
     }
     
     static hvc1 (track) {
-        if (!MP4.USE_M2TS_ADVANCED_CODECS)
-            return new Uint8Array();
-        
         const hvcc = MP4.box(
             MP4.types.hvcC,
             new Uint8Array([

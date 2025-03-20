@@ -198,7 +198,7 @@ export class H264Parser {
                 break;
             
             default:
-                console.log('H264Parser: unsupported NAL type!', unit.getType());
+                debug.log(`H264Parser: unsupported NAL type: ${unit.getType()}`);
         }
         
         return push;
@@ -214,7 +214,7 @@ export class H264Parser {
         const sps = new Uint8Array(data);
         const config = this.readSPS(sps);
         
-        this.track.fps = config.fps;
+        this.track.fps = config.fps || this.track.fps;
         this.track.sps = [sps];
         this.track.codec = 'avc1.';
         this.track.width = config.width;

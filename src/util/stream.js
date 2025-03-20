@@ -13,7 +13,7 @@ export class Stream {
         return false;
     }
     
-    static extractNalUnits (buffer, codec = 'avc') {
+    static extractNalUnits (buffer) {
         const length = buffer.byteLength;
         let i = 0;
         let left;

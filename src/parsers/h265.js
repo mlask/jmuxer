@@ -5,7 +5,6 @@ export class H265Parser {
     constructor (remuxer) {
         this.track = remuxer.mp4track;
         this.remuxer = remuxer;
-        this.estimate_fps = null;
     }
     
     readPPS (data) {
@@ -517,11 +516,8 @@ export class H265Parser {
                 break;
             
             default:
-                console.log('H265Parser: unsupported NAL type!', unit.getType());
+                debug.log(`H265Parser: unsupported NAL type: ${unit.getType()}`);
         }
-        
-        if (isKeyframe)
-            this.#estimateFPS();
         
         return push;
     }
@@ -535,7 +531,6 @@ export class H265Parser {
     }
     
     parseSEI (unit) {
-        console.log(`parseSEI - unit type=${unit.getType()} payloadSize=${unit.getPayloadSize()}`);
         const data = this.#discardEPB(unit.getPayload());
         let offset = 0;
         
@@ -556,12 +551,12 @@ export class H265Parser {
             }
             
             if (offset + payloadSize > data.length) {
-                console.log(`parseSEI - invalid SEI size (payloadType=${payloadType}, payloadSize=${payloadSize}, data.length=${data.length})`);
+                debug.log(`parseSEI - invalid SEI size (payloadType=${payloadType}, payloadSize=${payloadSize}, data.length=${data.length})`);
                 break;
             }
             
             let payloadData = data.subarray(offset, offset + payloadSize);
-            console.log(`parseSEI - payloadType=${payloadType}, payloadSize=${payloadSize}, payloadData`, payloadData);
+            debug.log(`parseSEI - payloadType=${payloadType}, payloadSize=${payloadSize}, payloadData`, payloadData);
             offset += payloadSize;
         }
     }
@@ -636,26 +631,6 @@ export class H265Parser {
         }
         
         return newData;
-    }
-    
-    #estimateFPS () {
-        if (this.estimate_fps === null) {
-            this.estimate_fps = {
-                fps: 0,
-                perf: performance.now(),
-                frames: 0,
-            };
-        }
-        
-        this.estimate_fps.frames ++;
-        
-        if (this.estimate_fps.frames > 1)
-            this.estimate_fps.fps = Math.round((performance.now() - this.estimate_fps.perf) / this.estimate_fps.frames / 1000, 2);
-        
-        if (this.estimate_fps.fps > 0 && this.track.fps !== this.estimate_fps.fps)
-            this.track.fps = this.estimate_fps.fps;
-        
-        console.log(`H265Parser: estimateFPS fps=${this.estimate_fps.fps} (fps=${this.track.fps})`);
     }
 }
 
