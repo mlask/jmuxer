@@ -1,84 +1,95 @@
 import * as debug from '../util/debug';
-import { H264Parser } from '../parsers/h264.js';
 import { BaseRemuxer } from './base.js';
 
-export class H264Remuxer extends BaseRemuxer {
-
-    constructor(timescale) {
+export class VideoRemuxer extends BaseRemuxer {
+    constructor (timescale, duration) {
         super();
-        this.readyToDecode = false;
-        this.nextDts = 0;
+        
         this.dts = 0;
+        this.parser = null;
+        this.nextDts = 0;
+        this.samples = [];
         this.mp4track = {
             id: BaseRemuxer.getTrackID(),
-            type: 'video',
-            len: 0,
-            fragmented: true,
-            sps: '',
-            pps: '',
             fps: 30,
+            len: 0,
+            pps: '',
+            sps: '',
+            vps: '',
+            type: 'video',
             width: 0,
             height: 0,
-            timescale: timescale,
-            duration: timescale,
+            params: {},
             samples: [],
+            duration: duration,
+            timescale: timescale || 1000,
+            fragmented: true,
+            pixelRatio: [1, 1],
         };
-        this.samples = [];
-        this.h264 = new H264Parser(this);
-    }
-
-    resetTrack() {
         this.readyToDecode = false;
-        this.mp4track.sps = '';
-        this.mp4track.pps = '';
-        this.nextDts = 0;
-        this.dts = 0;
     }
-
-    remux(frames) {
+    
+    resetTrack () {
+        this.dts = 0;
+        this.nextDts = 0;
+        this.mp4track.pps = '';
+        this.mp4track.sps = '';
+        this.mp4track.vps = '';
+        this.readyToDecode = false;
+    }
+    
+    remux (frames) {
         for (let frame of frames) {
-            let units = [];
             let size = 0;
+            let units = [];
+            
             for (let unit of frame.units) {
-                if (this.h264.parseNAL(unit)) {
+                if (this.parser === null)
+                    this.parser = unit.initParser(this);
+                
+                if (this.parser.parseNAL(unit)) {
                     units.push(unit);
                     size += unit.getSize();
                 }
+                else
+                    console.log('parseNAL failed!');
             }
+            
             if (units.length > 0 && this.readyToDecode) {
                 this.mp4track.len += size;
                 this.samples.push({
-                    units: units,
                     size: size,
-                    keyFrame: frame.keyFrame,
+                    units: units,
                     duration: frame.duration,
-                    compositionTimeOffset: frame.compositionTimeOffset
+                    keyFrame: frame.keyFrame,
+                    compositionTimeOffset: frame.compositionTimeOffset,
                 });
             }
         }
     }
-
-    getPayload() {
-        if (!this.isReady()) {
+    
+    getPayload () {
+        if (!this.isReady())
             return null;
-        }
+        
         let payload = new Uint8Array(this.mp4track.len);
         let offset = 0;
         let samples = this.mp4track.samples;
         let mp4Sample,
             duration;
-
+        
         this.dts = this.nextDts;
         while (this.samples.length) {
             let sample = this.samples.shift(),
                 units = sample.units;
-
+            
             duration = sample.duration;
             if (duration <= 0) {
                 debug.log(`remuxer: invalid sample duration at DTS: ${this.nextDts} :${duration}`);
                 this.mp4track.len -= sample.size;
                 continue;
             }
+            
             this.nextDts += duration;
             mp4Sample = {
                 size: sample.size,
@@ -93,16 +104,17 @@ export class H264Remuxer extends BaseRemuxer {
                     dependsOn: sample.keyFrame ? 2 : 1,
                 },
             };
-
+            
             for (const unit of units) {
                 payload.set(unit.getData(), offset);
                 offset += unit.getSize();
             }
             samples.push(mp4Sample);
         }
-
-        if (!samples.length) return null;
-
+        
+        if (!samples.length)
+            return null;
+        
         return new Uint8Array(payload.buffer, 0, this.mp4track.len);
     }
 }

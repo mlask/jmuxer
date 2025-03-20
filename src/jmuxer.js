@@ -1,54 +1,60 @@
 import * as debug from './util/debug';
-import { NALU } from './util/nalu.js';
-import { appendByteArray, isHEVC } from './util/utils.js';
-import { H264Parser } from './parsers/h264.js';
+import { appendByteArray } from './util/utils.js';
+import { H264NalUnit } from './parsers/h264.js';
+import { H265NalUnit } from './parsers/h265.js';
 import { AACParser } from './parsers/aac.js';
 import Event from './util/event';
 import RemuxController from './controller/remux.js';
 import BufferController from './controller/buffer.js';
 import { Duplex } from 'stream';
+import { Stream } from './util/stream.js';
 
 export default class JMuxer extends Event {
-    static isSupported(codec) {
+    static isSupported (codec) {
         return (window.MediaSource && window.MediaSource.isTypeSupported(codec));
     }
-
-    constructor(options) {
+    
+    constructor (options) {
         super('jmuxer');
+        
         this.isReset = false;
+        
         let defaults = {
-            node: '',
-            mode: 'both', // both, audio, video
-            flushingTime: 500,
-            maxDelay: 500,
-            ignoreDelay: false,
-            clearBuffer: true,
             fps: 30,
-            readFpsFromTrack: false, // set true to fetch fps value from NALu
+            mode: 'both', // both, audio, video
+            node: '',
             debug: false,
-            onReady: function() {}, // function called when MSE is ready to accept frames
-            onError: function() {}, // function called when jmuxer encounters any buffer related errors
+            maxDelay: 500,
+            timescale: 1000,
+            clearBuffer: true,
+            ignoreDelay: false,
+            flushingTime: 500,
+            readFpsFromTrack: false, // set true to fetch fps value from NALu
+            onData: function () {}, // function called when data is ready to be sent
+            onReady: function () {}, // function called when MSE is ready to accept frames
+            onError: function () {}, // function called when jmuxer encounters any buffer related errors
             onMissingVideoFrames: function () {}, // function called when jmuxer encounters any missing video frames
             onMissingAudioFrames: function () {}, // function called when jmuxer encounters any missing audio frames
         };
+        
         this.options = Object.assign({}, defaults, options);
         this.env = typeof process === 'object' && typeof window === 'undefined' ? 'node' : 'browser';
+        
         if (this.options.debug) {
             debug.setLogger();
         }
-
+        
         if (!this.options.fps) {
             this.options.fps = 30;
         }
-
-        this.isHEVC = false;
+        
         this.fpsUpdated = false;
-        this.frameDuration = (1000 / this.options.fps) | 0;
-        this.remuxController = new RemuxController(this.env);
+        this.frameDuration = (this.options.timescale / this.options.fps) | 0;
+        this.remuxController = new RemuxController(this.env, this.options.live);
         this.remuxController.addTrack(this.options.mode);
-
+        
         this.initData();
-
+        
         /* events callback */
         this.remuxController.on('buffer', this.onBuffer.bind(this));
         if (this.env == 'browser') {
@@ -56,17 +62,18 @@ export default class JMuxer extends Event {
             this.initBrowser();
         }
     }
-
-    initData() {
-        this.lastCleaningTime = Date.now();
-        this.kfPosition = [];
+    
+    initData () {
         this.kfCounter = 0;
+        this.kfPosition = [];
         this.pendingUnits = {};
         this.remainingData = new Uint8Array();
+        this.lastCleaningTime = Date.now();
+        
         this.startInterval();
     }
-
-    initBrowser() {
+    
+    initBrowser () {
         if (typeof this.options.node === 'string' && this.options.node == '') {
             debug.error('no video element were found to render, provide a valid video element');
         }
@@ -74,34 +81,37 @@ export default class JMuxer extends Event {
         this.mseReady = false;
         this.setupMSE();
     }
-
-    createStream() {
+    
+    createStream () {
         let feed = this.feed.bind(this);
         let destroy = this.destroy.bind(this);
+        
         this.stream = new Duplex({
             writableObjectMode: true,
-            read(size) {
-            },
-            write(data, encoding, callback) {
+            read (size) {},
+            write (data, encoding, callback) {
                 feed(data);
                 callback();
             },
-            final(callback) {
+            final (callback) {
                 destroy();
                 callback();
-            }
+            },
         });
+        
         return this.stream;
     }
-
-    setupMSE() {
+    
+    setupMSE () {
         window.MediaSource = window.MediaSource || window.WebKitMediaSource || window.ManagedMediaSource;
         if (!window.MediaSource) {
             throw 'Oops! Browser does not support Media Source Extension or Managed Media Source (iOS 17+).';
         }
+        
         this.isMSESupported = !!window.MediaSource;
         this.mediaSource = new window.MediaSource();
         this.url = URL.createObjectURL(this.mediaSource);
+        
         if (window.MediaSource === window.ManagedMediaSource) {
             try {
                 this.node.removeAttribute('src');
@@ -112,160 +122,180 @@ export default class JMuxer extends Event {
                 source.src = this.url;
                 this.node.appendChild(source);
                 this.node.load();
-            } catch (error) {
+            }
+            catch (error) {
                 this.node.src = this.url;
             }
-        } else {
+        }
+        else {
             this.node.src = this.url;
         }
+        
         this.mseEnded = false;
         this.mediaSource.addEventListener('sourceopen', this.onMSEOpen.bind(this));
         this.mediaSource.addEventListener('sourceclose', this.onMSEClose.bind(this));
         this.mediaSource.addEventListener('webkitsourceopen', this.onMSEOpen.bind(this));
         this.mediaSource.addEventListener('webkitsourceclose', this.onMSEClose.bind(this));
     }
-
-    endMSE() {
+    
+    endMSE () {
         if (!this.mseEnded) {
             try {
                 this.mseEnded = true;
                 this.mediaSource.endOfStream();
-            } catch (e) {
+            }
+            catch (e) {
                 debug.error('mediasource is not available to end');
             }
         }
     }
-
-    feed(data) {
-        let remux = false,
-            slices,
-            left,
-            duration,
+    
+    feed (data) {
+        let left,
+            remux = false,
             chunks = {
                 video: [],
                 audio: []
-            };
-
-        if (!data || !this.remuxController) return;
+            },
+            slices,
+            duration;
+        
+        if (!data || !this.remuxController)
+            return;
+        
         duration = data.duration ? parseInt(data.duration) : 0;
-
+        
         if (data.video) {
             data.video = appendByteArray(this.remainingData, data.video);
-            [slices, left] = H264Parser.extractNALu(data.video);
+            [slices, left] = Stream.extractNalUnits(data.video);
             this.remainingData = left || new Uint8Array();
-
+            
             if (slices.length > 0) {
                 chunks.video = this.getVideoFrames(slices, duration, data.compositionTimeOffset);
                 remux = true;
-            } else {
+            }
+            else {
                 debug.error('Failed to extract any NAL units from video data:', left);
+                
                 if (typeof this.options.onMissingVideoFrames === 'function') {
                     this.options.onMissingVideoFrames.call(null, data);
                 }
                 return;
             }
         }
+        
         if (data.audio) {
-            slices = this.remuxController.aacParser.extractAAC(data.audio);
+            slices = AACParser.extractAAC(data.audio);
+            
             if (slices.length > 0) {
                 chunks.audio = this.getAudioFrames(slices, duration);
                 remux = true;
-            } else {
+            }
+            else {
                 debug.error('Failed to extract audio data from:', data.audio);
+                
                 if (typeof this.options.onMissingAudioFrames === 'function') {
                     this.options.onMissingAudioFrames.call(null, data);
                 }
+                
                 return;
             }
         }
+        
         if (!remux) {
             debug.log('Input object must have video and/or audio property. Make sure it is a valid typed array');
             return;
         }
+        
         this.remuxController.remux(chunks);
     }
-
-    getVideoFrames(nalus, duration, compositionTimeOffset) {
-        let units = [],
-            frames = [],
-            fd = 0,
+    
+    getVideoFrames (nalus, duration, compositionTimeOffset) {
+        let fd = 0,
             tt = 0,
-            keyFrame = false,
-            vcl = false;
+            vcl = false,
+            units = [],
+            frames = [],
+            keyFrame = false;
+        
         if (this.pendingUnits.units) {
-            units = this.pendingUnits.units;
             vcl = this.pendingUnits.vcl;
+            units = this.pendingUnits.units;
             keyFrame = this.pendingUnits.keyFrame;
+            
             this.pendingUnits = {};
         }
-        for (let nalu of nalus) {
-            if (isHEVC(nalu)) {
-                this.isHEVC = true;
-                throw 'HEVC/H265 streams are unsupported';
-            }
+        
+        for (const nalu of nalus) {
+            const unit = Stream.NalUnitIsH265(nalu) ? new H265NalUnit(nalu) : new H264NalUnit(nalu);
             
-            let unit = new NALU(nalu);
-            if (unit.type() === NALU.IDR || unit.type() === NALU.NDR) {
-                H264Parser.parseHeader(unit);
-            }
             if (units.length && vcl && (unit.isfmb || !unit.isvcl)) {
                 frames.push({
                     units,
-                    keyFrame
+                    keyFrame,
                 });
+                
+                vcl = false;
                 units = [];
                 keyFrame = false;
-                vcl = false;
             }
+            
             units.push(unit);
-            keyFrame = keyFrame || unit.isKeyframe();
+            
             vcl = vcl || unit.isvcl;
+            keyFrame = keyFrame || unit.isKeyframe();
         }
+        
         if (units.length) {
             // lets keep indecisive nalus as pending in case of fixed fps
             if (!duration) {
                 this.pendingUnits = {
                     units,
                     keyFrame,
-                    vcl
+                    vcl,
                 };
             }
             else if (vcl) {
                 frames.push({
                     units,
-                    keyFrame
+                    keyFrame,
                 });
-            } else {
-                let last = frames.length - 1;
-                if (last >= 0) {
+            }
+            else {
+                const last = frames.length - 1;
+                if (last >= 0)
                     frames[last].units = frames[last].units.concat(units);
-                }
             }
         }
+        
         fd = duration ? duration / frames.length | 0 : this.frameDuration;
         tt = duration ? (duration - (fd * frames.length)) : 0;
-
+        
         frames.map((frame) => {
             frame.duration = fd;
             frame.compositionTimeOffset = compositionTimeOffset;
+            
             if (tt > 0) {
-                frame.duration++;
-                tt--;
+                frame.duration ++;
+                tt --;
             }
-            this.kfCounter++;
+            
+            this.kfCounter ++;
+            
             if (frame.keyFrame && this.options.clearBuffer) {
                 this.kfPosition.push((this.kfCounter * fd) / 1000);
             }
         });
+        
         debug.log(`jmuxer: No. of frames of the last chunk: ${frames.length}`);
         return frames;
     }
-
-    getAudioFrames(aacFrames, duration) {
+    
+    getAudioFrames (aacFrames, duration) {
         let frames = [],
             fd = 0,
             tt = 0;
-
+        
         for (let units of aacFrames) {
             frames.push({ units });
         }
@@ -280,8 +310,8 @@ export default class JMuxer extends Event {
         });
         return frames;
     }
-
-    destroy() {
+    
+    destroy () {
         this.stopInterval();
         if (this.stream) {
             this.remuxController.flush();
@@ -305,7 +335,7 @@ export default class JMuxer extends Event {
         this.mediaSource = null;
     }
 
-    reset() {
+    reset () {
         this.stopInterval();
         this.isReset = true;
         this.node.pause();
@@ -325,9 +355,11 @@ export default class JMuxer extends Event {
         }
         debug.log('JMuxer was reset');
     }
-
-    createBuffer() {
-        if (!this.mseReady || !this.remuxController || !this.remuxController.isReady() || this.bufferControllers) return;
+    
+    createBuffer () {
+        if (!this.mseReady || !this.remuxController || !this.remuxController.isReady() || this.bufferControllers)
+            return;
+        
         this.bufferControllers = {};
         for (let type in this.remuxController.tracks) {
             let track = this.remuxController.tracks[type];
@@ -340,24 +372,28 @@ export default class JMuxer extends Event {
             this.bufferControllers[type].on('error', this.onBufferError.bind(this));
         }
     }
-
-    startInterval() {
-        this.interval = setInterval(() => {
-            if (this.options.flushingTime) {
-                this.applyAndClearBuffer();
-            } else if (this.bufferControllers) {
-                this.cancelDelay();
-            }
-        }, this.options.flushingTime || 1000);
+    
+    startInterval () {
+        this.interval = setInterval(
+            () => {
+                if (this.options.flushingTime) {
+                    this.applyAndClearBuffer();
+                }
+                else if (this.bufferControllers) {
+                    this.cancelDelay();
+                }
+            },
+            this.options.flushingTime || 1000,
+        );
     }
-
-    stopInterval() {
+    
+    stopInterval () {
         if (this.interval) {
             clearInterval(this.interval);
         }
     }
-
-    cancelDelay() {
+    
+    cancelDelay () {
         if (!this.options.ignoreDelay) {
             if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking) {
                 const end = this.node.buffered.end(0);
@@ -367,21 +403,21 @@ export default class JMuxer extends Event {
             }
         }
     }
-
-    releaseBuffer() {
+    
+    releaseBuffer () {
         for (let type in this.bufferControllers) {
             this.bufferControllers[type].doAppend();
         }
     }
-
-    applyAndClearBuffer() {
+    
+    applyAndClearBuffer () {
         if (this.bufferControllers) {
             this.releaseBuffer();
             this.clearBuffer();
         }
     }
-
-    getSafeClearOffsetOfBuffer(offset) {
+    
+    getSafeClearOffsetOfBuffer (offset) {
         let maxLimit = (this.options.mode === 'audio' && offset) || 0,
             adjacentOffset;
         for (let i = 0; i < this.kfPosition.length; i++) {
@@ -400,8 +436,8 @@ export default class JMuxer extends Event {
         }
         return maxLimit;
     }
-
-    clearBuffer() {
+    
+    clearBuffer () {
         if (this.options.clearBuffer && (Date.now() - this.lastCleaningTime) > 10000) {
             for (let type in this.bufferControllers) {
                 let cleanMaxLimit = this.getSafeClearOffsetOfBuffer(this.node.currentTime);
@@ -410,42 +446,50 @@ export default class JMuxer extends Event {
             this.lastCleaningTime = Date.now();
         }
     }
-
-    onBuffer(data) {
+    
+    onBuffer (data) {
         if (this.options.readFpsFromTrack && typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
             this.fpsUpdated = true;
             this.options.fps = data.fps;
             this.frameDuration = (1000 / data.fps);
+            
             debug.log(`JMuxer changed FPS to ${data.fps} from track data`);
         }
+        
         if (this.env == 'browser') {
             if (this.bufferControllers && this.bufferControllers[data.type]) {
                 this.bufferControllers[data.type].feed(data.payload);
             }
-        } else if (this.stream) {
+        }
+        else if (this.stream) {
             this.stream.push(data.payload);
         }
+        
+        if (this.options.onData) {
+            this.options.onData(data.payload);
+        }
+        
         if (this.options.flushingTime === 0) {
             this.applyAndClearBuffer();
         }
     }
-
+    
     /* Events on MSE */
-    onMSEOpen() {
+    onMSEOpen () {
         this.mseReady = true;
         URL.revokeObjectURL(this.url);
         // this.createBuffer();
         if (typeof this.options.onReady === 'function') {
-            this.options.onReady.call(null, this.isReset);
+            this.options.onReady.call(null, this.isReset, this.mediaSource);
         }
     }
-
-    onMSEClose() {
+    
+    onMSEClose () {
         this.mseReady = false;
         this.videoStarted = false;
     }
-
-    onBufferError(data) {
+    
+    onBufferError (data) {
         if (data.name == 'QuotaExceeded') {
             debug.log(`JMuxer cleaning ${data.type} buffer due to QuotaExceeded error`);
             this.bufferControllers[data.type].initCleanup(this.node.currentTime);
@@ -458,6 +502,7 @@ export default class JMuxer extends Event {
         else {
             this.endMSE();
         }
+        
         if (typeof this.options.onError === 'function') {
             this.options.onError.call(null, data);
         }

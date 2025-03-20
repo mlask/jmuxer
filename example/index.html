@@ -8,7 +8,8 @@
 </head>
 <body>
 <div id="container" style="margin: 0 auto; text-align: center;">
-    <video style="border: 1px solid #333; max-width: 500px;" controls autoplay poster="images/loader-thumb.jpg" id="player"></video>
+    <video style="border: 1px solid #333; max-width: 800px;" controls autoplay id="player"></video>
+    <button id="play">PLAY</button>
 </div>
 <script>
   function parse(data) {
@@ -32,32 +33,51 @@
  }
 
  window.onload = function() {
-    var socketURL = 'ws://localhost:8080';
-    var jmuxer = new JMuxer({
-        node: 'player',
-        debug: true,
-        flushingTime: 1000, // we need 1000 for the demo as server provides a chunk data of 1000ms at a time
-        onError: function(data) {
-            console.log('Buffer error encountered', data);
-        },
-        onMissingVideoFrames: function (data) {
-            console.log('Video frames missing', data);
-        },
-        onMissingAudioFrames: function (data) {
-            console.log('Audio frames missing', data);
-        }
-     });
+    document.getElementById('play').addEventListener('click', () => {
+        document.getElementById('play').remove();
+        
+        //var socketURL = 'wss://devvideo3.safestar.pl/vws/c2O7bStjoFVIdZVvXLPKlY5WvQEAAACcFAAALtraZ8EF?action=stream&id=491151'; // h264
+        var socketURL = 'wss://devvideo2.safestar.pl/vws/c2O7bStjoFVIdZVvXLPKlY5WvQEAAACcFAAALtraZ8EF?action=stream&id=491141&sub=102'; // h265
+        var jmuxer = new JMuxer({
+            node: 'player',
+            mode: 'video',
+            live: true,
+            debug: false,
+            ignoreDelay: true,
+            flushingTime: 1, // we need 1000 for the demo as server provides a chunk data of 1000ms at a time
+            readFpsFromTrack: true,
+            onError: function(data) {
+                console.log('Buffer error encountered', data);
+            },
+            onMissingVideoFrames: function (data) {
+                console.log('Video frames missing', data);
+            },
+            onMissingAudioFrames: function (data) {
+                console.log('Audio frames missing', data);
+            }
+        });
 
-     var ws = new WebSocket(socketURL);
-     ws.binaryType = 'arraybuffer';
-     ws.addEventListener('message',function(event) {
-          var data = parse(event.data);
-          jmuxer.feed(data);
-     });
+        var ws = new WebSocket(socketURL);
+        ws.binaryType = 'arraybuffer';
+        ws.addEventListener('message', function (event) {
+            if (event.data instanceof ArrayBuffer) {
+                jmuxer.feed({
+                    video: new Uint8Array(event.data),
+                });
+            }
+            else {
+                console.log(`data: ${event.data}`);
+                /*
+                var data = parse(event.data);
+                jmuxer.feed(data);
+                */
+            }
+        });
 
-     ws.addEventListener('error', function(e) {
-        console.log('Socket Error');
-     });
+        ws.addEventListener('error', function(e) {
+            console.log('Socket Error');
+        });
+    });
  }
  
 </script>

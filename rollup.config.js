@@ -17,6 +17,16 @@ export default {
             }
         },
         {
+            file: 'dist/jmuxer.js',
+            format: 'umd',
+            name: 'JMuxer',
+            sourcemap: false,
+            globals: {
+                stream: 'stream',
+                fs: 'fs'
+            }
+        },
+        {
             file: 'dist/jmuxer.min.js',
             format: 'umd',
             name: 'JMuxer',

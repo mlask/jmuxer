@@ -1,320 +1,312 @@
 import { ExpGolomb } from '../util/exp-golomb.js';
-import { NALU } from '../util/nalu.js';
 import * as debug from '../util/debug';
+import { H265NalUnit } from './h265.js';
 
 export class H264Parser {
-
-    static extractNALu(buffer) {
-        let i = 0,
-            length = buffer.byteLength,
-            value,
-            state = 0,
-            result = [],
-            left,
-            lastIndex = 0;
-
-        while (i < length) {
-            value = buffer[i++];
-            // finding 3 or 4-byte start codes (00 00 01 OR 00 00 00 01)
-            switch (state) {
-                case 0:
-                    if (value === 0) {
-                        state = 1;
-                    }
-                    break;
-                case 1:
-                    if (value === 0) {
-                        state = 2;
-                    } else {
-                        state = 0;
-                    }
-                    break;
-                case 2:
-                case 3:
-                    if (value === 0) {
-                        state = 3;
-                    } else if (value === 1 && i < length) {
-                        if (lastIndex != i - state -1) {
-                            result.push(buffer.subarray(lastIndex, i - state -1));
-                        }
-                        lastIndex = i;
-                        state = 0;
-                    } else {
-                        state = 0;
-                    }
-                    break;
-                default:
-                    break;
-            }
-        }
-
-        if (lastIndex < length) {
-            left = buffer.subarray(lastIndex, length);
-        }
-        return [result, left];
+    #profilesWithOptionalSPSData = [100, 110, 122, 244, 44, 83, 86, 118, 128, 138, 139, 134];
+    
+    constructor (remuxer) {
+        this.track = remuxer.mp4track;
+        this.remuxer = remuxer;
     }
-
-    /**
-     * Advance the ExpGolomb decoder past a scaling list. The scaling
-     * list is optionally transmitted as part of a sequence parameter
-     * set and is not relevant to transmuxing.
-     * @param decoder {ExpGolomb} exp golomb decoder
-     * @param count {number} the number of entries in this scaling list
-     * @see Recommendation ITU-T H.264, Section 7.3.2.1.1.1
-     */
-    static skipScalingList(decoder, count) {
-        let lastScale = 8,
-            nextScale = 8,
-            deltaScale;
-        for (let j = 0; j < count; j++) {
-            if (nextScale !== 0) {
-                deltaScale = decoder.readEG();
-                nextScale = (lastScale + deltaScale + 256) % 256;
-            }
-            lastScale = (nextScale === 0) ? lastScale : nextScale;
-        }
-    }
-
-    /**
-     * Read a sequence parameter set and return some interesting video
-     * properties. A sequence parameter set is the H264 metadata that
-     * describes the properties of upcoming video frames.
-     * @param data {Uint8Array} the bytes of a sequence parameter set
-     * @return {object} an object with configuration parsed from the
-     * sequence parameter set, including the dimensions of the
-     * associated video frames.
-     */
-    static readSPS(data) {
-        let decoder = new ExpGolomb(data);
-        let frameCropLeftOffset = 0,
-            frameCropRightOffset = 0,
-            frameCropTopOffset = 0,
-            frameCropBottomOffset = 0,
-            sarScale = 1,
-            profileIdc,
-            profileCompat,
-            levelIdc,
-            numRefFramesInPicOrderCntCycle,
-            picWidthInMbsMinus1,
-            picHeightInMapUnitsMinus1,
-            frameMbsOnlyFlag,
-            scalingListCount,
-            fps = 0;
-        decoder.readUByte(); // skip NAL header
-
-        // rewrite NAL
-        let rbsp = [],
-            hdr_bytes = 1,
-            nal_bytes = data.byteLength;
-        for (let i = hdr_bytes; i < nal_bytes; i ++) {
-            if ((i + 2) < nal_bytes && decoder.readBits(24, false) === 0x000003) {
-                rbsp.push(decoder.readBits(8));
-                rbsp.push(decoder.readBits(8));
-                i += 2;
-                // emulation_prevention_three_byte
-                decoder.readBits(8);
-            }
-            else {
-                rbsp.push(decoder.readBits(8));
-            }
-        }
-        decoder.setData(new Uint8Array(rbsp));
-        // end of rewrite data
-
-        profileIdc = decoder.readUByte(); // profile_idc
-        profileCompat = decoder.readBits(5); // constraint_set[0-4]_flag, u(5)
-        decoder.skipBits(3); // reserved_zero_3bits u(3),
-        levelIdc = decoder.readUByte(); // level_idc u(8)
-        decoder.skipUEG(); // seq_parameter_set_id
+    
+    readSPS (data) {
+        const eg = new ExpGolomb(data);
+        const readUByte = eg.readUByte.bind(eg);
+        const readUInt = eg.readUInt.bind(eg);
+        const readBits = eg.readBits.bind(eg);
+        const readUEG = eg.readUEG.bind(eg);
+        const readBoolean = eg.readBoolean.bind(eg);
+        const skipBits = eg.skipBits.bind(eg);
+        const skipEG = eg.skipEG.bind(eg);
+        const skipUEG = eg.skipUEG.bind(eg);
+        const skipScalingList = this.#skipScalingList.bind(this);
+        
+        let frameCropLeftOffset = 0;
+        let frameCropRightOffset = 0;
+        let frameCropTopOffset = 0;
+        let frameCropBottomOffset = 0;
+        let numRefFramesInPicOrderCntCycle;
+        let scalingListCount;
+        let i;
+        let calcFps;
+        
+        readUByte();
+        
+        const profileIdc = readUByte(); // profile_idc u(8)
+        readUByte(); // constraint_set[0-5]_flag
+        readUByte(); // level_idc u(8)
+        skipUEG(); // seq_parameter_set_id
+        
         // some profiles have more optional data we don't need
-        if (profileIdc === 100 ||
-            profileIdc === 110 ||
-            profileIdc === 122 ||
-            profileIdc === 244 ||
-            profileIdc === 44 ||
-            profileIdc === 83 ||
-            profileIdc === 86 ||
-            profileIdc === 118 ||
-            profileIdc === 128) {
-            var chromaFormatIdc = decoder.readUEG();
+        if (this.#profilesWithOptionalSPSData.indexOf(profileIdc) >= 0) {
+            const chromaFormatIdc = readUEG();
             if (chromaFormatIdc === 3) {
-                decoder.skipBits(1); // separate_colour_plane_flag
-            }
-            decoder.skipUEG(); // bit_depth_luma_minus8
-            decoder.skipUEG(); // bit_depth_chroma_minus8
-            decoder.skipBits(1); // qpprime_y_zero_transform_bypass_flag
-            if (decoder.readBoolean()) { // seq_scaling_matrix_present_flag
-                scalingListCount = (chromaFormatIdc !== 3) ? 8 : 12;
-                for (let i = 0; i < scalingListCount; ++i) {
-                    if (decoder.readBoolean()) { // seq_scaling_list_present_flag[ i ]
-                        if (i < 6) {
-                            H264Parser.skipScalingList(decoder, 16);
-                        } else {
-                            H264Parser.skipScalingList(decoder, 64);
-                        }
+                skipBits(1);
+            } // separate_colour_plane_flag
+            
+            skipUEG(); // bit_depth_luma_minus8
+            skipUEG(); // bit_depth_chroma_minus8
+            skipBits(1); // qpprime_y_zero_transform_bypass_flag
+            
+            if (readBoolean()) {
+                // seq_scaling_matrix_present_flag
+                scalingListCount = chromaFormatIdc !== 3 ? 8 : 12;
+                for (i = 0; i < scalingListCount; i ++) {
+                    if (readBoolean()) {
+                        // seq_scaling_list_present_flag[ i ]
+                        if (i < 6)
+                            skipScalingList(16, eg);
+                        else
+                            skipScalingList(64, eg);
                     }
                 }
             }
         }
-        decoder.skipUEG(); // log2_max_frame_num_minus4
-        var picOrderCntType = decoder.readUEG();
+        
+        skipUEG(); // log2_max_frame_num_minus4
+        
+        const picOrderCntType = readUEG();
         if (picOrderCntType === 0) {
-            decoder.readUEG(); // log2_max_pic_order_cnt_lsb_minus4
-        } else if (picOrderCntType === 1) {
-            decoder.skipBits(1); // delta_pic_order_always_zero_flag
-            decoder.skipEG(); // offset_for_non_ref_pic
-            decoder.skipEG(); // offset_for_top_to_bottom_field
-            numRefFramesInPicOrderCntCycle = decoder.readUEG();
-            for (let i = 0; i < numRefFramesInPicOrderCntCycle; ++i) {
-                decoder.skipEG(); // offset_for_ref_frame[ i ]
-            }
+            readUEG(); // log2_max_pic_order_cnt_lsb_minus4
         }
-        decoder.skipUEG(); // max_num_ref_frames
-        decoder.skipBits(1); // gaps_in_frame_num_value_allowed_flag
-        picWidthInMbsMinus1 = decoder.readUEG();
-        picHeightInMapUnitsMinus1 = decoder.readUEG();
-        frameMbsOnlyFlag = decoder.readBits(1);
+        else if (picOrderCntType === 1) {
+            skipBits(1); // delta_pic_order_always_zero_flag
+            skipEG(); // offset_for_non_ref_pic
+            skipEG(); // offset_for_top_to_bottom_field
+            
+            numRefFramesInPicOrderCntCycle = readUEG();
+            for (i = 0; i < numRefFramesInPicOrderCntCycle; i ++) {
+                skipEG();
+            } // offset_for_ref_frame[ i ]
+        }
+        
+        skipUEG(); // max_num_ref_frames
+        skipBits(1); // gaps_in_frame_num_value_allowed_flag
+        
+        const picWidthInMbsMinus1 = readUEG();
+        const picHeightInMapUnitsMinus1 = readUEG();
+        const frameMbsOnlyFlag = readBits(1);
         if (frameMbsOnlyFlag === 0) {
-            decoder.skipBits(1); // mb_adaptive_frame_field_flag
+            skipBits(1);
+        } // mb_adaptive_frame_field_flag
+        
+        skipBits(1); // direct_8x8_inference_flag
+        if (readBoolean()) {
+            // frame_cropping_flag
+            frameCropLeftOffset = readUEG();
+            frameCropRightOffset = readUEG();
+            frameCropTopOffset = readUEG();
+            frameCropBottomOffset = readUEG();
         }
-        decoder.skipBits(1); // direct_8x8_inference_flag
-        if (decoder.readBoolean()) { // frame_cropping_flag
-            frameCropLeftOffset = decoder.readUEG();
-            frameCropRightOffset = decoder.readUEG();
-            frameCropTopOffset = decoder.readUEG();
-            frameCropBottomOffset = decoder.readUEG();
-        }
-        if (decoder.readBoolean()) {
+        
+        let pixelRatio = [1, 1];
+        if (readBoolean()) {
             // vui_parameters_present_flag
-            if (decoder.readBoolean()) {
+            
+            if (readBoolean()) {
                 // aspect_ratio_info_present_flag
-                let sarRatio;
-                const aspectRatioIdc = decoder.readUByte();
-                switch (aspectRatioIdc) {
-                    case 1: sarRatio = [1, 1]; break;
-                    case 2: sarRatio = [12, 11]; break;
-                    case 3: sarRatio = [10, 11]; break;
-                    case 4: sarRatio = [16, 11]; break;
-                    case 5: sarRatio = [40, 33]; break;
-                    case 6: sarRatio = [24, 11]; break;
-                    case 7: sarRatio = [20, 11]; break;
-                    case 8: sarRatio = [32, 11]; break;
-                    case 9: sarRatio = [80, 33]; break;
-                    case 10: sarRatio = [18, 11]; break;
-                    case 11: sarRatio = [15, 11]; break;
-                    case 12: sarRatio = [64, 33]; break;
-                    case 13: sarRatio = [160, 99]; break;
-                    case 14: sarRatio = [4, 3]; break;
-                    case 15: sarRatio = [3, 2]; break;
-                    case 16: sarRatio = [2, 1]; break;
-                    case 255: {
-                        sarRatio = [decoder.readUByte() << 8 | decoder.readUByte(), decoder.readUByte() << 8 | decoder.readUByte()];
-                        break;
-                    }
+                const aspectRatioIdc = readUByte();
+                const pixelRatioTable = [
+                    [1, 1], [12, 11], [10, 11], [16, 11],
+                    [40, 33], [24, 11], [20, 11], [32, 11],
+                    [80, 33], [18, 11], [15, 11], [64, 33],
+                    [160, 99], [4, 3], [3, 2], [2, 1],
+                ];
+                
+                if (aspectRatioIdc > 0 && aspectRatioIdc <= 16) {
+                    pixelRatio = pixelRatioTable[aspectRatioIdc - 1];
                 }
-                if (sarRatio && sarRatio[0] > 0 && sarRatio[1] > 0) {
-                    sarScale = sarRatio[0] / sarRatio[1];
+                else if (aspectRatioIdc === 255) {
+                    pixelRatio = [
+                        (readUByte() << 8) | readUByte(),
+                        (readUByte() << 8) | readUByte(),
+                    ];
                 }
             }
-            if (decoder.readBoolean()) { decoder.skipBits(1); }
-
-            if (decoder.readBoolean()) {
-                decoder.skipBits(4);
-                if (decoder.readBoolean()) {
-                    decoder.skipBits(24);
+            
+            if (readBoolean()) {
+                // overscan_info_present_flag
+                skipBits(1);
+            }
+            
+            if (readBoolean()) {
+                // video_signal_type_present_flag
+                skipBits(4);
+                
+                if (readBoolean()) {
+                    // colour_description_present_flag
+                    skipBits(24);
                 }
             }
-            if (decoder.readBoolean()) {
-                decoder.skipUEG();
-                decoder.skipUEG();
+            
+            if (readBoolean()) {
+                // chroma_loc_info_present_flag
+                skipUEG();
+                skipUEG();
             }
-            if (decoder.readBoolean()) {
-                let unitsInTick = decoder.readUInt();
-                let timeScale = decoder.readUInt();
-                let fixedFrameRate = decoder.readBoolean();
-                let frameDuration = timeScale / (2 * unitsInTick);
-
-                if (fixedFrameRate) {
-                    fps = frameDuration;
-                }
+            
+            if (readBoolean()) {
+                // timing_info_present_flag
+                const numUnitsInTick = readUInt();
+                const timeScale = readUInt();
+                const fixedFrameRateFlag = readBoolean();
+                
+                const frameDuration = timeScale / (2 * numUnitsInTick);
+                if (fixedFrameRateFlag)
+                    calcFps = frameDuration;
             }
         }
+        
         return {
-            fps: fps > 0 ? fps : undefined,
-            width: Math.ceil((((picWidthInMbsMinus1 + 1) * 16) - frameCropLeftOffset * 2 - frameCropRightOffset * 2) * sarScale),
-            height: ((2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16) - ((frameMbsOnlyFlag ? 2 : 4) * (frameCropTopOffset + frameCropBottomOffset)),
+            fps: calcFps,
+            width: Math.ceil((picWidthInMbsMinus1 + 1) * 16 - frameCropLeftOffset * 2 - frameCropRightOffset * 2),
+            height: (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 - (frameMbsOnlyFlag ? 2 : 4) * (frameCropTopOffset + frameCropBottomOffset),
+            pixelRatio: pixelRatio,
         };
     }
-    static parseHeader(unit) {
-        let decoder = new ExpGolomb(unit.getPayload());
-        // skip NALu type
-        decoder.readUByte();
-        unit.isfmb = decoder.readUEG() === 0;
-        unit.stype = decoder.readUEG();
+    
+    parseNAL (unit) {
+        if (!unit)
+            return false;
+        
+        let push = false;
+        switch (unit.getType()) {
+            case H264NalUnit.NALU_TYPE_NDR:
+            case H264NalUnit.NALU_TYPE_IDR:
+                push = true;
+                break;
+            
+            case H264NalUnit.NALU_TYPE_PPS:
+                if (!this.track.pps) {
+                    this.parsePPS(unit.getPayload());
+                    
+                    if (!this.remuxer.readyToDecode && this.track.sps && this.track.pps)
+                        this.remuxer.readyToDecode = true;
+                }
+                push = true;
+                break;
+            
+            case H264NalUnit.NALU_TYPE_SPS:
+                if (!this.track.sps) {
+                    this.parseSPS(unit.getPayload());
+                    
+                    if (!this.remuxer.readyToDecode && this.track.sps && this.track.pps)
+                        this.remuxer.readyToDecode = true;
+                }
+                push = true;
+                break;
+            
+            default:
+                console.log('H264Parser: unsupported NAL type!', unit.getType());
+        }
+        
+        return push;
     }
-    constructor(remuxer) {
-        this.remuxer = remuxer;
-        this.track = remuxer.mp4track;
+    
+    parsePPS (data) {
+        this.track.pps = [
+            new Uint8Array(data),
+        ];
     }
-
-    parseSPS(sps) {
-        var config = H264Parser.readSPS(new Uint8Array(sps));
-
+    
+    parseSPS (data) {
+        const sps = new Uint8Array(data);
+        const config = this.readSPS(sps);
+        
         this.track.fps = config.fps;
+        this.track.sps = [sps];
+        this.track.codec = 'avc1.';
         this.track.width = config.width;
         this.track.height = config.height;
-        this.track.sps = [new Uint8Array(sps)];
-        this.track.codec = 'avc1.';
-
-        let codecarray = new DataView(sps.buffer, sps.byteOffset + 1, 4);
-        for (let i = 0; i < 3; ++i) {
-            var h = codecarray.getUint8(i).toString(16);
-            if (h.length < 2) {
+        this.track.segmentCodec = 'avc';
+        
+        const codecarray = sps.subarray(1, 4);
+        for (let i = 0; i < 3; i ++) {
+            let h = codecarray[i].toString(16);
+            if (h.length < 2)
                 h = '0' + h;
-            }
             this.track.codec += h;
         }
     }
-
-    parsePPS(pps) {
-        this.track.pps = [new Uint8Array(pps)];
-    }
-
-    parseNAL(unit) {
-        if (!unit) return false;
-
-        let push = false;
-        switch (unit.type()) {
-            case NALU.IDR:
-            case NALU.NDR:
-                push = true;
-                break;
-            case NALU.PPS:
-                if (!this.track.pps) {
-                    this.parsePPS(unit.getPayload());
-                    if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps) {
-                        this.remuxer.readyToDecode = true;
-                    }
-                }
-                push = true;
-                break;
-            case NALU.SPS:
-                if (!this.track.sps) {
-                    this.parseSPS(unit.getPayload());
-                    if (!this.remuxer.readyToDecode && this.track.pps && this.track.sps) {
-                        this.remuxer.readyToDecode = true;
-                    }
-                }
-                push = true;
-                break;
-            case NALU.AUD:
-                debug.log('AUD - ignoing');
-                break;
-            case NALU.SEI:
-                debug.log('SEI - ignoing');
-                break;
-            default:
+    
+    #skipScalingList (count, reader) {
+        let lastScale = 8;
+        let nextScale = 8;
+        let deltaScale;
+        
+        for (let j = 0; j < count; j ++) {
+            if (nextScale !== 0) {
+                deltaScale = reader.readEG();
+                nextScale = (lastScale + deltaScale + 256) % 256;
+            }
+            
+            lastScale = (nextScale === 0) ? lastScale : nextScale;
         }
-        return push;
+    }
+}
+
+export class H264NalUnit {
+    static NALU_TYPE_NDR = 0x01;
+    static NALU_TYPE_IDR = 0x05;
+    static NALU_TYPE_SEI = 0x06;
+    static NALU_TYPE_SPS = 0x07;
+    static NALU_TYPE_PPS = 0x08;
+    static NALU_TYPE_AUD = 0x09;
+    static NALU_TYPE_FILLER_DATA = 0x0c;
+    
+    constructor (data) {
+        this.type = data[0] & 0x1f;
+        this.isfmb = false;
+        this.isvcl = this.type === H264NalUnit.NALU_TYPE_NDR || this.type === H264NalUnit.NALU_TYPE_IDR;
+        this.stype = undefined;
+        this.payload = data;
+        
+        if (this.isvcl)
+            this.#parseHeader();
+    }
+    
+    getData () {
+        const result = new Uint8Array(this.getSize());
+        const view = new DataView(result.buffer);
+        
+        view.setUint32(0, this.getSize() - 4);
+        result.set(this.getPayload(), 4);
+        
+        return result;
+    }
+    
+    getSize () {
+        return 4 + this.getPayloadSize();
+    }
+    
+    getType () {
+        return this.type;
+    }
+    
+    initParser (remuxer) {
+        return new H264Parser(remuxer);
+    }
+    
+    getPayload () {
+        return this.payload;
+    }
+    
+    isKeyframe () {
+        return this.type === H264NalUnit.NALU_TYPE_IDR;
+    }
+    
+    getPayloadSize () {
+        return this.payload.byteLength;
+    }
+    
+    #parseHeader () {
+        const eg = new ExpGolomb(this.payload);
+        
+        // skip NALu type
+        eg.readUByte();
+        
+        this.isfmb = eg.readUEG() === 0; // first_mb_in_slice
+        this.stype = eg.readUEG(); // slice_type
     }
 }
