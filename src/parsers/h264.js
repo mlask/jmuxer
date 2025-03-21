@@ -12,101 +12,80 @@ export class H264Parser {
     
     readSPS (data) {
         const eg = new ExpGolomb(data);
-        const readUByte = eg.readUByte.bind(eg);
-        const readUInt = eg.readUInt.bind(eg);
-        const readBits = eg.readBits.bind(eg);
-        const readUEG = eg.readUEG.bind(eg);
-        const readBoolean = eg.readBoolean.bind(eg);
-        const skipBits = eg.skipBits.bind(eg);
-        const skipEG = eg.skipEG.bind(eg);
-        const skipUEG = eg.skipUEG.bind(eg);
-        const skipScalingList = this.#skipScalingList.bind(this);
-        
-        let frameCropLeftOffset = 0;
-        let frameCropRightOffset = 0;
-        let frameCropTopOffset = 0;
-        let frameCropBottomOffset = 0;
-        let numRefFramesInPicOrderCntCycle;
-        let scalingListCount;
-        let i;
         let calcFps;
         
-        readUByte();
+        // skip NAL header
+        eg.readUByte();
         
-        const profileIdc = readUByte(); // profile_idc u(8)
-        readUByte(); // constraint_set[0-5]_flag
-        readUByte(); // level_idc u(8)
-        skipUEG(); // seq_parameter_set_id
+        const profile_idc = eg.readUByte(); // profile_idc u(8)
+        eg.readUByte(); // constraint_set[0-5]_flag v(1) + reserved_zero_2bits u(2)
+        eg.readUByte(); // level_idc u(8)
+        eg.skipUEG(); // seq_parameter_set_id ue(v)
         
         // some profiles have more optional data we don't need
-        if (this.#profilesWithOptionalSPSData.indexOf(profileIdc) >= 0) {
-            const chromaFormatIdc = readUEG();
-            if (chromaFormatIdc === 3) {
-                skipBits(1);
-            } // separate_colour_plane_flag
+        if (this.#profilesWithOptionalSPSData.indexOf(profile_idc) >= 0) {
+            const chroma_format_idc = eg.readUEG(); // chroma_format_idc ue(v)
+            if (chroma_format_idc === 3) {
+                eg.skipBits(1); // separate_colour_plane_flag u(1)
+            }
             
-            skipUEG(); // bit_depth_luma_minus8
-            skipUEG(); // bit_depth_chroma_minus8
-            skipBits(1); // qpprime_y_zero_transform_bypass_flag
+            eg.skipUEG(); // bit_depth_luma_minus8 ue(v)
+            eg.skipUEG(); // bit_depth_chroma_minus8 ue(v)
+            eg.skipBits(1); // qpprime_y_zero_transform_bypass_flag u(1)
             
-            if (readBoolean()) {
-                // seq_scaling_matrix_present_flag
-                scalingListCount = chromaFormatIdc !== 3 ? 8 : 12;
-                for (i = 0; i < scalingListCount; i ++) {
-                    if (readBoolean()) {
-                        // seq_scaling_list_present_flag[ i ]
-                        if (i < 6)
-                            skipScalingList(16, eg);
-                        else
-                            skipScalingList(64, eg);
+            if (eg.readBoolean()) {  // seq_scaling_matrix_present_flag u(1)
+                for (let i = 0; i < (chroma_format_idc !== 3 ? 8 : 12); i ++) {
+                    if (eg.readBoolean()) { // seq_scaling_list_present_flag[i] u(1)
+                        this.#skipScalingList(i < 6 ? 16 : 64, eg);
                     }
                 }
             }
         }
         
-        skipUEG(); // log2_max_frame_num_minus4
+        eg.skipUEG(); // log2_max_frame_num_minus4 ue(v)
         
-        const picOrderCntType = readUEG();
-        if (picOrderCntType === 0) {
-            readUEG(); // log2_max_pic_order_cnt_lsb_minus4
+        const pic_order_cnt_type = eg.readUEG(); // pic_order_cnt_type ue(v)
+        if (pic_order_cnt_type === 0) {
+            eg.skipUEG(); // log2_max_pic_order_cnt_lsb_minus4 ue(v)
         }
-        else if (picOrderCntType === 1) {
-            skipBits(1); // delta_pic_order_always_zero_flag
-            skipEG(); // offset_for_non_ref_pic
-            skipEG(); // offset_for_top_to_bottom_field
+        else if (pic_order_cnt_type === 1) {
+            eg.skipBits(1); // delta_pic_order_always_zero_flag u(1)
+            eg.skipEG(); // offset_for_non_ref_pic se(v)
+            eg.skipEG(); // offset_for_top_to_bottom_field se(v)
             
-            numRefFramesInPicOrderCntCycle = readUEG();
-            for (i = 0; i < numRefFramesInPicOrderCntCycle; i ++) {
-                skipEG();
-            } // offset_for_ref_frame[ i ]
+            const num_ref_frames_in_pic_order_cnt_cycle = eg.readUEG(); // num_ref_frames_in_pic_order_cnt_cycle ue(v)
+            for (let i = 0; i < num_ref_frames_in_pic_order_cnt_cycle; i ++) {
+                eg.skipEG(); // offset_for_ref_frame[i] se(v)
+            }
         }
         
-        skipUEG(); // max_num_ref_frames
-        skipBits(1); // gaps_in_frame_num_value_allowed_flag
+        eg.skipUEG(); // max_num_ref_frames ue(v)
+        eg.skipBits(1); // gaps_in_frame_num_value_allowed_flag u(1)
         
-        const picWidthInMbsMinus1 = readUEG();
-        const picHeightInMapUnitsMinus1 = readUEG();
-        const frameMbsOnlyFlag = readBits(1);
-        if (frameMbsOnlyFlag === 0) {
-            skipBits(1);
-        } // mb_adaptive_frame_field_flag
+        const pic_width_in_mbs_minus1 = eg.readUEG(); // pic_width_in_mbs_minus1 ue(v)
+        const pic_height_in_map_units_minus1 = eg.readUEG(); // pic_height_in_map_units_minus1 ue(v)
+        const frame_mbs_only_flag = eg.readBits(1); // frame_mbs_only_flag u(1)
+        if (frame_mbs_only_flag === 0) {
+            eg.skipBits(1); // mb_adaptive_frame_field_flag u(1)
+        }
         
-        skipBits(1); // direct_8x8_inference_flag
-        if (readBoolean()) {
-            // frame_cropping_flag
-            frameCropLeftOffset = readUEG();
-            frameCropRightOffset = readUEG();
-            frameCropTopOffset = readUEG();
-            frameCropBottomOffset = readUEG();
+        eg.skipBits(1); // direct_8x8_inference_flag u(1)
+        
+        let frame_crop_left_offset = 0;
+        let frame_crop_right_offset = 0;
+        let frame_crop_top_offset = 0;
+        let frame_crop_bottom_offset = 0;
+        if (eg.readBoolean()) { // frame_cropping_flag u(1)
+            frame_crop_left_offset = eg.readUEG(); // frame_crop_left_offset ue(v)
+            frame_crop_right_offset = eg.readUEG(); // frame_crop_right_offset ue(v)
+            frame_crop_top_offset = eg.readUEG(); // frame_crop_top_offset ue(v)
+            frame_crop_bottom_offset = eg.readUEG(); // frame_crop_bottom_offset ue(v)
         }
         
         let pixelRatio = [1, 1];
-        if (readBoolean()) {
-            // vui_parameters_present_flag
-            
-            if (readBoolean()) {
-                // aspect_ratio_info_present_flag
-                const aspectRatioIdc = readUByte();
+        if (eg.readBoolean()) { // vui_parameters_present_flag u(1)
+            if (eg.readBoolean()) { // aspect_ratio_info_present_flag u(1)
+                const aspect_ratio_idc = eg.readUByte(); // aspect_ratio_idc u(8)
                 const pixelRatioTable = [
                     [1, 1], [12, 11], [10, 11], [16, 11],
                     [40, 33], [24, 11], [20, 11], [32, 11],
@@ -114,54 +93,48 @@ export class H264Parser {
                     [160, 99], [4, 3], [3, 2], [2, 1],
                 ];
                 
-                if (aspectRatioIdc > 0 && aspectRatioIdc <= 16) {
-                    pixelRatio = pixelRatioTable[aspectRatioIdc - 1];
+                if (aspect_ratio_idc > 0 && aspect_ratio_idc <= 16) {
+                    pixelRatio = pixelRatioTable[aspect_ratio_idc - 1];
                 }
-                else if (aspectRatioIdc === 255) {
+                else if (aspect_ratio_idc === 255) {
                     pixelRatio = [
-                        (readUByte() << 8) | readUByte(),
-                        (readUByte() << 8) | readUByte(),
+                        eg.readUByte(2),
+                        eg.readUByte(2),
                     ];
                 }
             }
             
-            if (readBoolean()) {
-                // overscan_info_present_flag
-                skipBits(1);
+            if (eg.readBoolean()) { // overscan_info_present_flag u(1)
+                eg.skipBits(1); // overscan_appropriate_flag u(1)
             }
             
-            if (readBoolean()) {
-                // video_signal_type_present_flag
-                skipBits(4);
+            if (eg.readBoolean()) { // video_signal_type_present_flag u(1)
+                eg.skipBits(4); // video_format u(3) + video_full_range_flag u(1)
                 
-                if (readBoolean()) {
-                    // colour_description_present_flag
-                    skipBits(24);
+                if (eg.readBoolean()) { // colour_description_present_flag u(1)
+                    eg.skipBits(24); // colour_primaries u(8) + transfer_characteristics u(8) + matrix_coefficients u(8)
                 }
             }
             
-            if (readBoolean()) {
-                // chroma_loc_info_present_flag
-                skipUEG();
-                skipUEG();
+            if (eg.readBoolean()) { // chroma_loc_info_present_flag u(1)
+                eg.skipUEG(); // chroma_sample_loc_type_top_field ue(v)
+                eg.skipUEG(); // chroma_sample_loc_type_bottom_field ue(v)
             }
             
-            if (readBoolean()) {
-                // timing_info_present_flag
-                const numUnitsInTick = readUInt();
-                const timeScale = readUInt();
-                const fixedFrameRateFlag = readBoolean();
+            if (eg.readBoolean()) { // timing_info_present_flag u(1)
+                const num_units_in_tick  = eg.readUInt(); // num_units_in_tick u(32)
+                const time_scale = eg.readUInt(); // time_scale u(32)
+                const fixed_frame_rate_flag = eg.readBoolean(); // fixed_frame_rate_flag u(1)
                 
-                const frameDuration = timeScale / (2 * numUnitsInTick);
-                if (fixedFrameRateFlag)
-                    calcFps = frameDuration;
+                if (fixed_frame_rate_flag)
+                    calcFps = time_scale / (2 * num_units_in_tick);
             }
         }
         
         return {
             fps: calcFps,
-            width: Math.ceil((picWidthInMbsMinus1 + 1) * 16 - frameCropLeftOffset * 2 - frameCropRightOffset * 2),
-            height: (2 - frameMbsOnlyFlag) * (picHeightInMapUnitsMinus1 + 1) * 16 - (frameMbsOnlyFlag ? 2 : 4) * (frameCropTopOffset + frameCropBottomOffset),
+            width: Math.ceil((pic_width_in_mbs_minus1 + 1) * 16 - frame_crop_left_offset * 2 - frame_crop_right_offset * 2),
+            height: (2 - frame_mbs_only_flag) * (pic_height_in_map_units_minus1 + 1) * 16 - (frame_mbs_only_flag ? 2 : 4) * (frame_crop_top_offset + frame_crop_bottom_offset),
             pixelRatio: pixelRatio,
         };
     }
@@ -228,6 +201,8 @@ export class H264Parser {
                 h = '0' + h;
             this.track.codec += h;
         }
+        
+        console.log(`h264 codec: ${this.track.codec}`);
     }
     
     #skipScalingList (count, reader) {

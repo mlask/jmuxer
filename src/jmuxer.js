@@ -10,26 +10,20 @@ import { Duplex } from 'stream';
 import { Stream } from './util/stream.js';
 
 export default class JMuxer extends Event {
-    static isSupported (codec) {
-        return (window.MediaSource && window.MediaSource.isTypeSupported(codec));
-    }
-    
     constructor (options) {
         super('jmuxer');
         
-        this.isReset = false;
-        
-        let defaults = {
+        const defaults = {
             fps: 30,
+            live: false,
             mode: 'both', // both, audio, video
             node: '',
             debug: false,
-            maxDelay: 500,
+            maxDelay: 1500,
             timescale: 1000,
             clearBuffer: true,
             estimateFps: false,
-            ignoreDelay: false,
-            flushingTime: 500,
+            autoCancelDelay: true,
             readFpsFromTrack: false, // set true to fetch fps value from NALu
             onData: function () {}, // function called when data is ready to be sent
             onReady: function () {}, // function called when MSE is ready to accept frames
@@ -38,8 +32,9 @@ export default class JMuxer extends Event {
             onMissingAudioFrames: function () {}, // function called when jmuxer encounters any missing audio frames
         };
         
-        this.options = Object.assign({}, defaults, options);
         this.env = typeof process === 'object' && typeof window === 'undefined' ? 'node' : 'browser';
+        this.isReset = false;
+        this.options = Object.assign({}, defaults, options);
         
         if (this.options.debug) {
             debug.setLogger();
@@ -56,103 +51,10 @@ export default class JMuxer extends Event {
         
         this.initData();
         
-        /* events callback */
-        this.remuxController.on('buffer', this.onBuffer.bind(this));
-        if (this.env == 'browser') {
+        this.remuxController.on('buffer', this.#onBuffer.bind(this));
+        if (this.env === 'browser') {
             this.remuxController.on('ready', this.createBuffer.bind(this));
             this.initBrowser();
-        }
-    }
-    
-    initData () {
-        this.kfCounter = 0;
-        this.kfPosition = [];
-        this.pendingUnits = {};
-        this.remainingData = new Uint8Array();
-        this.lastCleaningTime = Date.now();
-        
-        this.startInterval();
-    }
-    
-    initBrowser () {
-        if (typeof this.options.node === 'string' && this.options.node == '') {
-            debug.error('no video element were found to render, provide a valid video element');
-        }
-        
-        this.node = typeof this.options.node === 'string' ? document.getElementById(this.options.node) : this.options.node;
-        this.mseReady = false;
-        this.setupMSE();
-    }
-    
-    createStream () {
-        let feed = this.feed.bind(this);
-        let destroy = this.destroy.bind(this);
-        
-        this.stream = new Duplex({
-            writableObjectMode: true,
-            read (size) {},
-            write (data, encoding, callback) {
-                feed(data);
-                callback();
-            },
-            final (callback) {
-                destroy();
-                callback();
-            },
-        });
-        
-        return this.stream;
-    }
-    
-    setupMSE () {
-        window.MediaSource = window.MediaSource || window.WebKitMediaSource || window.ManagedMediaSource;
-        if (!window.MediaSource) {
-            throw 'Oops! Browser does not support Media Source Extension or Managed Media Source (iOS 17+).';
-        }
-        
-        this.isMSESupported = !!window.MediaSource;
-        this.mediaSource = new window.MediaSource();
-        this.url = URL.createObjectURL(this.mediaSource);
-        
-        if (window.MediaSource === window.ManagedMediaSource) {
-            try {
-                this.node.removeAttribute('src');
-                this.node.disableRemotePlayback = true; // ManagedMediaSource will not open without disableRemotePlayback set to false or source alternatives
-                
-                const source = document.createElement('source');
-                source.type = 'video/mp4';
-                source.src = this.url;
-                
-                this.node.appendChild(source);
-                this.node.load();
-                this.node.addEventListener('waiting', () => {
-                    this.node.currentTime = this.mediaSource.duration;
-                });
-            }
-            catch (error) {
-                this.node.src = this.url;
-            }
-        }
-        else {
-            this.node.src = this.url;
-        }
-        
-        this.mseEnded = false;
-        this.mediaSource.addEventListener('sourceopen', this.onMSEOpen.bind(this));
-        this.mediaSource.addEventListener('sourceclose', this.onMSEClose.bind(this));
-        this.mediaSource.addEventListener('webkitsourceopen', this.onMSEOpen.bind(this));
-        this.mediaSource.addEventListener('webkitsourceclose', this.onMSEClose.bind(this));
-    }
-    
-    endMSE () {
-        if (!this.mseEnded) {
-            try {
-                this.mseEnded = true;
-                this.mediaSource.endOfStream();
-            }
-            catch (e) {
-                debug.error('mediasource is not available to end');
-            }
         }
     }
     
@@ -177,7 +79,7 @@ export default class JMuxer extends Event {
             this.remainingData = left || new Uint8Array();
             
             if (slices.length > 0) {
-                chunks.video = this.getVideoFrames(slices, duration, data.compositionTimeOffset);
+                chunks.video = this.getVideoFrames(slices, duration);
                 remux = true;
             }
             else {
@@ -211,7 +113,208 @@ export default class JMuxer extends Event {
         this.remuxController.remux(chunks);
     }
     
-    getVideoFrames (nalus, duration, compositionTimeOffset) {
+    reset () {
+        this.isReset = true;
+        this.node.pause();
+        
+        if (this.remuxController)
+            this.remuxController.reset();
+        
+        if (this.bufferControllers) {
+            for (let type in this.bufferControllers)
+                this.bufferControllers[type].destroy();
+            
+            this.bufferControllers = null;
+            this.endMSE();
+        }
+        
+        this.initData();
+        
+        if (this.env === 'browser')
+            this.initBrowser();
+        
+        debug.log('JMuxer was reset');
+    }
+    
+    endMSE () {
+        if (!this.mseEnded) {
+            try {
+                this.mseEnded = true;
+                this.mediaSource.endOfStream();
+            }
+            catch (e) {
+                debug.error('mediasource is not available to end');
+            }
+        }
+    }
+    
+    destroy () {
+        if (this.stream) {
+            this.remuxController.flush();
+            this.stream.push(null);
+            this.stream = null;
+        }
+        
+        if (this.remuxController) {
+            this.remuxController.destroy();
+            this.remuxController = null;
+        }
+        
+        if (this.bufferControllers) {
+            for (let type in this.bufferControllers) {
+                this.bufferControllers[type].destroy();
+            }
+            this.bufferControllers = null;
+            this.endMSE();
+        }
+        
+        this.node = false;
+        this.mseReady = false;
+        this.mediaSource = null;
+        this.videoStarted = false;
+    }
+    
+    initData () {
+        this.kfCounter = 0;
+        this.kfPosition = [];
+        this.pendingUnits = {};
+        this.remainingData = new Uint8Array();
+        this.lastCleaningTime = performance.now();
+    }
+    
+    setupMSE () {
+        window.MediaSource = window.MediaSource || window.WebKitMediaSource || window.ManagedMediaSource;
+        if (!window.MediaSource) {
+            throw 'Oops! Browser does not support Media Source Extension or Managed Media Source (iOS 17+).';
+        }
+        
+        this.isMSESupported = !!window.MediaSource;
+        this.mediaSource = new window.MediaSource();
+        this.url = URL.createObjectURL(this.mediaSource);
+        
+        if (window.MediaSource === window.ManagedMediaSource) {
+            try {
+                this.node.removeAttribute('src');
+                this.node.disableRemotePlayback = true; // ManagedMediaSource will not open without disableRemotePlayback set to false or source alternatives
+                
+                const source = document.createElement('source');
+                source.type = 'video/mp4';
+                source.src = this.url;
+                
+                this.node.appendChild(source);
+                this.node.load();
+            }
+            catch (error) {
+                this.node.src = this.url;
+            }
+        }
+        else {
+            this.node.src = this.url;
+        }
+        
+        this.mseEnded = false;
+        this.mediaSource.addEventListener('sourceopen', this.#onMSEOpen.bind(this));
+        this.mediaSource.addEventListener('sourceclose', this.#onMSEClose.bind(this));
+        this.mediaSource.addEventListener('webkitsourceopen', this.#onMSEOpen.bind(this));
+        this.mediaSource.addEventListener('webkitsourceclose', this.#onMSEClose.bind(this));
+    }
+    
+    cancelDelay () {
+        if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking && !document.hidden) {
+            const end = this.node.buffered.end(0);
+            if ((end - this.node.currentTime) > (this.options.maxDelay / 1000)) {
+                this.node.currentTime = end - (this.options.maxDelay / 2000); // 0.001;
+                this.node.play().catch(error => {
+                    debug.log('cancelDelay play() error', error);
+                });
+            }
+        }
+    }
+    
+    clearBuffer () {
+        if (this.options.clearBuffer && (performance.now() - this.lastCleaningTime) >= 10000) {
+            for (let type in this.bufferControllers) {
+                let cleanMaxLimit = this.getSafeClearOffsetOfBuffer(this.node.currentTime);
+                this.bufferControllers[type].initCleanup(cleanMaxLimit);
+            }
+            this.lastCleaningTime = performance.now();
+        }
+    }
+    
+    initBrowser () {
+        if (typeof this.options.node === 'string' && this.options.node == '') {
+            debug.error('no video element were found to render, provide a valid video element');
+        }
+        
+        this.node = typeof this.options.node === 'string' ? document.getElementById(this.options.node) : this.options.node;
+        this.mseReady = false;
+        this.setupMSE();
+    }
+    
+    createBuffer () {
+        if (!this.mseReady || !this.remuxController || !this.remuxController.isReady() || this.bufferControllers)
+            return;
+        
+        this.bufferControllers = {};
+        for (let type in this.remuxController.tracks) {
+            let track = this.remuxController.tracks[type];
+            if (!JMuxer.isSupported(`${type}/mp4; codecs="${track.mp4track.codec}"`)) {
+                debug.error('Browser does not support codec');
+                return false;
+            }
+            let sb = this.mediaSource.addSourceBuffer(`${type}/mp4; codecs="${track.mp4track.codec}"`);
+            this.bufferControllers[type] = new BufferController(sb, type);
+            this.bufferControllers[type].on('error', this.#onBufferError.bind(this));
+        }
+    }
+    
+    createStream () {
+        let feed = this.feed.bind(this);
+        let destroy = this.destroy.bind(this);
+        
+        this.stream = new Duplex({
+            writableObjectMode: true,
+            read (size) {},
+            write (data, encoding, callback) {
+                feed(data);
+                callback();
+            },
+            final (callback) {
+                destroy();
+                callback();
+            },
+        });
+        
+        return this.stream;
+    }
+    
+    releaseBuffer () {
+        for (let type in this.bufferControllers) {
+            this.bufferControllers[type].doAppend();
+        }
+    }
+    
+    getAudioFrames (aacFrames, duration) {
+        let frames = [],
+            fd = 0,
+            tt = 0;
+        
+        for (let units of aacFrames) {
+            frames.push({ units });
+        }
+        fd = duration ? duration / frames.length | 0 : this.frameDuration;
+        tt = duration ? (duration - (fd * frames.length)) : 0;
+        frames.map((frame) => {
+            frame.duration = fd;
+            if (tt > 0) {
+                frame.duration++;
+                tt--;
+            }
+        });
+        return frames;
+    }
+    
+    getVideoFrames (nalus, duration) {
         let fd = 0;
         let tt = 0;
         let vcl = false;
@@ -274,7 +377,6 @@ export default class JMuxer extends Event {
         
         frames.map((frame) => {
             frame.duration = fd;
-            frame.compositionTimeOffset = compositionTimeOffset;
             
             if (tt > 0) {
                 frame.duration ++;
@@ -290,125 +392,6 @@ export default class JMuxer extends Event {
         
         debug.log(`jmuxer: No. of frames of the last chunk: ${frames.length}`);
         return frames;
-    }
-    
-    getAudioFrames (aacFrames, duration) {
-        let frames = [],
-            fd = 0,
-            tt = 0;
-        
-        for (let units of aacFrames) {
-            frames.push({ units });
-        }
-        fd = duration ? duration / frames.length | 0 : this.frameDuration;
-        tt = duration ? (duration - (fd * frames.length)) : 0;
-        frames.map((frame) => {
-            frame.duration = fd;
-            if (tt > 0) {
-                frame.duration++;
-                tt--;
-            }
-        });
-        return frames;
-    }
-    
-    destroy () {
-        this.stopInterval();
-        if (this.stream) {
-            this.remuxController.flush();
-            this.stream.push(null);
-            this.stream = null;
-        }
-        if (this.remuxController) {
-            this.remuxController.destroy();
-            this.remuxController = null;
-        }
-        if (this.bufferControllers) {
-            for (let type in this.bufferControllers) {
-                this.bufferControllers[type].destroy();
-            }
-            this.bufferControllers = null;
-            this.endMSE();
-        }
-        this.node = false;
-        this.mseReady = false;
-        this.videoStarted = false;
-        this.mediaSource = null;
-    }
-
-    reset () {
-        this.stopInterval();
-        this.isReset = true;
-        this.node.pause();
-        if (this.remuxController) {
-            this.remuxController.reset();
-        }
-        if (this.bufferControllers) {
-            for (let type in this.bufferControllers) {
-                this.bufferControllers[type].destroy();
-            }
-            this.bufferControllers = null;
-            this.endMSE();
-        }
-        this.initData();
-        if (this.env == 'browser') {
-            this.initBrowser();
-        }
-        debug.log('JMuxer was reset');
-    }
-    
-    createBuffer () {
-        if (!this.mseReady || !this.remuxController || !this.remuxController.isReady() || this.bufferControllers)
-            return;
-        
-        this.bufferControllers = {};
-        for (let type in this.remuxController.tracks) {
-            let track = this.remuxController.tracks[type];
-            if (!JMuxer.isSupported(`${type}/mp4; codecs="${track.mp4track.codec}"`)) {
-                debug.error('Browser does not support codec');
-                return false;
-            }
-            let sb = this.mediaSource.addSourceBuffer(`${type}/mp4; codecs="${track.mp4track.codec}"`);
-            this.bufferControllers[type] = new BufferController(sb, type);
-            this.bufferControllers[type].on('error', this.onBufferError.bind(this));
-        }
-    }
-    
-    startInterval () {
-        this.interval = setInterval(
-            () => {
-                if (this.options.flushingTime) {
-                    this.applyAndClearBuffer();
-                }
-                else if (this.bufferControllers) {
-                    this.cancelDelay();
-                }
-            },
-            this.options.flushingTime || 1000,
-        );
-    }
-    
-    stopInterval () {
-        if (this.interval) {
-            clearInterval(this.interval);
-        }
-    }
-    
-    cancelDelay () {
-        if (!this.options.ignoreDelay) {
-            if (this.node.buffered && this.node.buffered.length > 0 && !this.node.seeking) {
-                const end = this.node.buffered.end(0);
-                if ((end - this.node.currentTime) > (this.options.maxDelay / 1000)) {
-                    this.node.currentTime = end - 0.001;
-                }
-            }
-        }
-    }
-    
-    releaseBuffer () {
-        for (let type in this.bufferControllers) {
-            this.bufferControllers[type].doAppend();
-        }
     }
     
     applyAndClearBuffer () {
@@ -438,17 +421,7 @@ export default class JMuxer extends Event {
         return maxLimit;
     }
     
-    clearBuffer () {
-        if (this.options.clearBuffer && (Date.now() - this.lastCleaningTime) > 10000) {
-            for (let type in this.bufferControllers) {
-                let cleanMaxLimit = this.getSafeClearOffsetOfBuffer(this.node.currentTime);
-                this.bufferControllers[type].initCleanup(cleanMaxLimit);
-            }
-            this.lastCleaningTime = Date.now();
-        }
-    }
-    
-    onBuffer (data) {
+    #onBuffer (data) {
         if (this.options.readFpsFromTrack && typeof data.fps !== 'undefined' && this.options.fps != data.fps) {
             this.fpsUpdated = true;
             this.options.fps = data.fps;
@@ -457,9 +430,13 @@ export default class JMuxer extends Event {
             debug.log(`JMuxer changed FPS to ${data.fps} from track data`);
         }
         
-        if (this.env == 'browser') {
+        if (this.env === 'browser') {
             if (this.bufferControllers && this.bufferControllers[data.type]) {
-                this.bufferControllers[data.type].feed(data.payload);
+                this.bufferControllers[data.type].feed(data.payload).then(() => {
+                    this.applyAndClearBuffer();
+                    if (this.options.autoCancelDelay)
+                        this.cancelDelay();
+                });
             }
         }
         else if (this.stream) {
@@ -469,30 +446,31 @@ export default class JMuxer extends Event {
         if (this.options.onData) {
             this.options.onData(data.payload);
         }
-        
-        if (this.options.flushingTime === 0) {
-            this.applyAndClearBuffer();
-        }
     }
     
-    /* Events on MSE */
-    onMSEOpen () {
+    #onMSEOpen () {
         this.mseReady = true;
         URL.revokeObjectURL(this.url);
         
         if (typeof this.options.onReady === 'function')
             this.options.onReady.call(null, this.isReset, this.mediaSource);
         
-        if (this.remuxController.duration === -1)
-            this.mediaSource.duration = Infinity;
+        if (this.remuxController.duration === -1 || this.options.live) {
+            if (!!this.mediaSource.setLiveSeekableRange && !!this.mediaSource.clearLiveSeekableRange) {
+                this.mediaSource.duration = Infinity;
+            }
+            else {
+                this.mediaSource.duration = Math.pow(2, 32);
+            }
+        }
     }
     
-    onMSEClose () {
+    #onMSEClose () {
         this.mseReady = false;
         this.videoStarted = false;
     }
     
-    onBufferError (data) {
+    #onBufferError (data) {
         if (data.name == 'QuotaExceeded') {
             debug.log(`JMuxer cleaning ${data.type} buffer due to QuotaExceeded error`);
             this.bufferControllers[data.type].initCleanup(this.node.currentTime);
@@ -509,5 +487,9 @@ export default class JMuxer extends Event {
         if (typeof this.options.onError === 'function') {
             this.options.onError.call(null, data);
         }
+    }
+    
+    static isSupported (codec) {
+        return (window.MediaSource && window.MediaSource.isTypeSupported(codec));
     }
 }

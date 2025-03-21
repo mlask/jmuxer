@@ -63,7 +63,6 @@ export class VideoRemuxer extends BaseRemuxer {
                     units: units,
                     duration: frame.duration,
                     keyFrame: frame.keyFrame,
-                    compositionTimeOffset: frame.compositionTimeOffset,
                 });
             }
         }
@@ -73,45 +72,41 @@ export class VideoRemuxer extends BaseRemuxer {
         if (!this.isReady())
             return null;
         
-        let payload = new Uint8Array(this.mp4track.len);
         let offset = 0;
+        let payload = new Uint8Array(this.mp4track.len);
         let samples = this.mp4track.samples;
-        let mp4Sample,
-            duration;
         
         this.dts = this.nextDts;
+        
         while (this.samples.length) {
-            let sample = this.samples.shift(),
-                units = sample.units;
+            const sample = this.samples.shift();
             
-            duration = sample.duration;
-            if (duration <= 0) {
-                debug.log(`remuxer: invalid sample duration at DTS: ${this.nextDts} :${duration}`);
+            if (sample.duration <= 0) {
+                debug.log(`remuxer: invalid sample duration at DTS: ${this.nextDts} :${sample.duration}`);
                 this.mp4track.len -= sample.size;
                 continue;
             }
             
-            this.nextDts += duration;
-            mp4Sample = {
-                size: sample.size,
-                duration: duration,
-                cts: sample.compositionTimeOffset || 0,
-                flags: {
-                    isLeading: 0,
-                    isDependedOn: 0,
-                    hasRedundancy: 0,
-                    degradPrio: 0,
-                    isNonSync: sample.keyFrame ? 0 : 1,
-                    dependsOn: sample.keyFrame ? 2 : 1,
-                },
-            };
+            this.nextDts += sample.duration;
             
-            for (const unit of units) {
+            for (const unit of sample.units) {
                 payload.set(unit.getData(), offset);
                 offset += unit.getSize();
             }
             
-            samples.push(mp4Sample);
+            samples.push({
+                cts: 0,
+                size: sample.size,
+                flags: {
+                    dependsOn: sample.keyFrame ? 2 : 1,
+                    isLeading: 0,
+                    isNonSync: sample.keyFrame ? 0 : 1,
+                    degradPrio: 0,
+                    isDependedOn: 0,
+                    hasRedundancy: 0,
+                },
+                duration: sample.duration,
+            });
         }
         
         if (!samples.length)

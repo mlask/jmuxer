@@ -8,7 +8,8 @@
 </head>
 <body>
 <div id="container" style="margin: 0 auto; text-align: center;">
-    <video style="border: 1px solid #333; max-width: 800px;" controls autoplay id="player"></video>
+    <video style="border: 1px solid #333; max-width: 640px;" controls autoplay playsinline id="player1"></video>
+    <video style="border: 1px solid #333; max-width: 640px;" controls autoplay playsinline id="player2"></video>
     <button id="play">PLAY</button>
 </div>
 <script>
@@ -36,6 +37,66 @@
     document.getElementById('play').addEventListener('click', () => {
         document.getElementById('play').remove();
         
+        // player1
+        var socketURL1 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491146'; // h265
+        var jmuxer1 = new JMuxer({
+            node: 'player1',
+            mode: 'video',
+            live: true,
+            debug: false,
+            estimateFps: true,
+            readFpsFromTrack: true,
+            onError: function(data) {
+                console.log('player1: Buffer error encountered', data);
+            },
+        });
+        var ws1 = new WebSocket(socketURL1);
+        ws1.binaryType = 'arraybuffer';
+        ws1.addEventListener('message', (event) => {
+            if (event.data instanceof ArrayBuffer) {
+                jmuxer1.feed({
+                    video: new Uint8Array(event.data),
+                });
+            }
+            else {
+                console.log(`player1: text data: ${event.data}`);
+            }
+        });
+        ws1.addEventListener('error', (event) => {
+            console.log('player1: Socket Error', event);
+        });
+        
+        // player2
+        var socketURL2 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491141'; // h265
+        var jmuxer2 = new JMuxer({
+            node: 'player2',
+            mode: 'video',
+            live: true,
+            debug: false,
+            estimateFps: true,
+            readFpsFromTrack: true,
+            onError: function(data) {
+                console.log('player2: Buffer error encountered', data);
+            },
+        });
+        var ws2 = new WebSocket(socketURL2);
+        ws2.binaryType = 'arraybuffer';
+        ws2.addEventListener('message', (event) => {
+            if (event.data instanceof ArrayBuffer) {
+                jmuxer2.feed({
+                    video: new Uint8Array(event.data),
+                });
+            }
+            else {
+                console.log(`player2: text data: ${event.data}`);
+            }
+        });
+        ws2.addEventListener('error', (event) => {
+            console.log('player2: Socket Error', event);
+        });
+        
+        
+        /*
         var socketURL = 'ws://127.0.0.1/ws';
         var jmuxer = new JMuxer({
             node: 'player',
@@ -72,10 +133,11 @@
         ws.addEventListener('error', function(e) {
             console.log('Socket Error');
         });
+        */
     });
  }
  
 </script>
-<script type="text/javascript" src="jmuxer.min.js"></script>
+<script type="text/javascript" src="jmuxer.min.js?01"></script>
 </body>
 </html>

@@ -4,7 +4,53 @@
  */
 
 export class MP4 {
+    static get INT32_MAX () { return Math.pow(2, 31) - 1; }
     static get UINT32_MAX () { return Math.pow(2, 32) - 1; }
+    static DESCRIPTOR = {
+        ObjectDescrTag: 0x01,
+        InitialObjectDescrTag: 0x02,
+        ES_DescrTag: 0x03,
+        DecoderConfigDescrTag: 0x04,
+        DecSpecificInfoTag: 0x05,
+        SLConfigDescrTag: 0x06,
+        ContentIdentDescrTag: 0x07,
+        SupplContentIdentDescrTag: 0x08,
+        IPI_DescrPointerTag: 0x09,
+        IPMP_DescrPointerTag: 0x0A,
+        IPMP_DescrTag: 0x0B,
+        QoS_DescrTag: 0x0C,
+        RegistrationDescrTag: 0x0D,
+        ES_ID_IncTag: 0x0E,
+        ES_ID_RefTag: 0x0F,
+        MP4_IOD_Tag: 0x10,
+        MP4_OD_Tag: 0x11,
+        IPL_DescrPointerRefTag: 0x12,
+        ExtensionProfileLevelDescrTag: 0x13,
+        profileLevelIndicationIndexDescrTag: 0x14,
+        ContentClassificationDescrTag: 0x40,
+        KeyWordDescrTag: 0x41,
+        RatingDescrTag: 0x42,
+        LanguageDescrTag: 0x43,
+        ShortTextualDescrTag: 0x44,
+        ExpandedTextualDescrTag: 0x45,
+        ContentCreatorNameDescrTag: 0x46,
+        ContentCreationDateDescrTag: 0x47,
+        OCICreatorNameDescrTag: 0x48,
+        OCICreationDateDescrTag: 0x49,
+        SmpteCameraPositionDescrTag: 0x4A,
+        SegmentDescrTag: 0x4B,
+        MediaTimeDescrTag: 0x4C,
+        IPMP_ToolsListDescrTag: 0x60,
+        IPMP_ToolTag: 0x61,
+        M4MuxTimingDescrTag: 0x62,
+        M4MuxCodeTableDescrTag: 0x63,
+        ExtSLConfigDescrTag: 0x64,
+        M4MuxBufferSizeDescrTag: 0x65,
+        M4MuxIdentDescrTag: 0x66,
+        DependencyPointerTag: 0x67,
+        DependencyMarkerTag: 0x68,
+        M4MuxChannelDescrTag: 0x69,
+    };
     
     static init () {
         MP4.types = {
@@ -136,13 +182,12 @@ export class MP4 {
             0x00, 0x00, 0x00, 0x01,
         ]);// entry_count
         
-        const major_brand = 'iso6';//'isom';
+        const major_brand = 'dash';
         const minor_version = 1;
         const compatible_brands = [
             major_brand,
-            //'avc1',
-            'dash',
-            'msdh',
+            'iso6',
+            'mp41',
         ];
         
         MP4.FTYP = MP4.box(
@@ -491,35 +536,50 @@ export class MP4 {
         );
     }
     
-    /* TO FIX! */
     static esds (track) {
-        const configlen = track.config.byteLength;
-        let data = new Uint8Array(26 + configlen + 3);
-        
-        data.set([
-            0x00, // version 0
-            0x00, 0x00, 0x00, // flags
+        return new Uint8Array([
+            0x00, // Version
+            0x00, 0x00, 0x00, // Flags
             
-            0x03, // descriptor_type
-            0x17 + configlen, // length
-            0x00, 0x01, // es_id
-            0x00, // stream_priority
-            
-            0x04, // descriptor_type
-            0x0f + configlen, // length
-            0x40, // codec : mpeg4_audio
-            0x15, // stream_type
-            0x00, 0x00, 0x00, // buffer_size
-            0x00, 0x00, 0x00, 0x00, // maxBitrate
-            0x00, 0x00, 0x00, 0x00, // avgBitrate
-            
-            0x05, // descriptor_type
-            configlen,
+            // ESDescriptor
+            ...MP4.esdsDescriptor(
+                MP4.DESCRIPTOR.ES_DescrTag, // TAG
+                ...MP4.breakNumberIntoBytes(0, 2), // ES_ID
+                0x00, // Flags
+                
+                // DecoderConfigDescriptor
+                ...MP4.esdsDescriptor(
+                    MP4.DESCRIPTOR.DecoderConfigDescrTag, // TAG
+                    track.type === 'audio' ? 0x40 : 0x02, // ObjectTypeIndication -- 0x40 = AAC, 0x20 = MPEG-4 Video
+                    track.type === 'audio' ? 0x15 : 0x04, // Stream Type
+                    0x00, 0x00, 0x00, // Buffer Size DB
+                    ...MP4.breakNumberIntoBytes(0, 4), // Max Bitrate
+                    ...MP4.breakNumberIntoBytes(0, 4), // Avg Bitrate
+                    
+                    // DecSpecificInfoDescriptor
+                    ...MP4.esdsDescriptor(
+                        MP4.DESCRIPTOR.DecSpecificInfoTag, // TAG
+                        track.config,
+                    )
+                ),
+                
+                // SLConfigDescriptor
+                ...MP4.esdsDescriptor(
+                    MP4.DESCRIPTOR.SLConfigDescrTag, // TAG
+                    0x02, // MP4 File Mode
+                ),
+            ),
         ]);
-        data.set(track.config, 26);
-        data.set([0x06, 0x01, 0x02], 26 + configlen);
+    }
+    
+    static esdsDescriptor (tag, ...payload) {
+        const data = new Uint8Array(payload);
         
-        return data;
+        return new Uint8Array([
+            tag,
+            ...MP4.varInt(data.byteLength),
+            ...data,
+        ]);
     }
     
     static audioStsd (track) {
@@ -569,10 +629,8 @@ export class MP4 {
     }
     
     static stsd (track) {
-        const segmentCodec = track.segmentCodec;
-        
         if (track.type === 'audio') {
-            if (segmentCodec === 'aac') {
+            if (track.segmentCodec === 'aac') {
                 return MP4.box(
                     MP4.types.stsd,
                     MP4.STSD,
@@ -580,7 +638,7 @@ export class MP4 {
                 );
             }
             
-            if (segmentCodec === 'ac3' && track.config) {
+            if (track.segmentCodec === 'ac3' && track.config) {
                 return MP4.box(
                     MP4.types.stsd,
                     MP4.STSD,
@@ -588,7 +646,7 @@ export class MP4 {
                 );
             }
             
-            if (segmentCodec === 'mp3' && track.codec === 'mp3') {
+            if (track.segmentCodec === 'mp3' && track.codec === 'mp3') {
                 return MP4.box(
                     MP4.types.stsd,
                     MP4.STSD,
@@ -598,7 +656,7 @@ export class MP4 {
         }
         else {
             if (track.pps && track.sps) {
-                if (segmentCodec === 'avc') {
+                if (track.segmentCodec === 'avc') {
                     return MP4.box(
                         MP4.types.stsd,
                         MP4.STSD,
@@ -606,7 +664,7 @@ export class MP4 {
                     );
                 }
                 
-                if (segmentCodec === 'hevc' && track.vps) {
+                if (track.segmentCodec === 'hevc' && track.vps) {
                     return MP4.box(
                         MP4.types.stsd,
                         MP4.STSD,
@@ -619,7 +677,7 @@ export class MP4 {
             }
         }
         
-        throw new Error(`unsupported ${track.type} segment codec (${segmentCodec}/${track.codec})`);
+        throw new Error(`unsupported ${track.type} segment codec (${track.segmentCodec}/${track.codec})`);
     }
     
     static tkhd (track) {
@@ -705,13 +763,7 @@ export class MP4 {
         );
     }
     
-    /**
-     * Generate a track box.
-     * @param track {object} a track definition
-     * @return {Uint8Array} the track box
-     */
     static trak (track) {
-        track.duration = track.duration || 0xffffffff;
         return MP4.box(
             MP4.types.trak,
             MP4.tkhd(track),
@@ -877,6 +929,22 @@ export class MP4 {
         );
     }
     
+    static varInt (value) {
+        const bytes = [];
+        while (value > MP4.INT32_MAX) {
+            bytes.push((value & 0xff) | 0x80);
+            value /= 128;
+        }
+        while (value & ~0x7f) {
+            bytes.push((value & 0xff) | 0x80);
+            value >>>= 7;
+        }
+        if (value > 0) {
+            bytes.push(value);
+        }
+        return bytes;
+    }
+    
     static initSegment (tracks) {
         if (!MP4.types)
             MP4.init();
@@ -887,6 +955,10 @@ export class MP4 {
         result.set(movie, MP4.FTYP.byteLength);
         
         return result;
+    }
+    
+    static varIntLength (value) {
+        return value <= 0x7f ? 1 : (value <= 0x3fff ? 2 : (value <= 0x1fffff ? 3 : 4));
     }
     
     static breakNumberIntoBytes (number, numBytes) {

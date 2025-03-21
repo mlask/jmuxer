@@ -15,7 +15,15 @@ export default class BufferController extends Event {
         this.pendingCleaning = 0;
         
         this.sourceBuffer = sourceBuffer;
-        this.sourceBuffer.addEventListener('updateend', (event) => {
+        this.sourceBuffer.addEventListener('error', (error) => {
+            this.dispatch('error', {
+                name: 'buffer',
+                type: this.type,
+                error: 'buffer error',
+                details: error,
+            });
+        });
+        this.sourceBuffer.addEventListener('updateend', () => {
             if (this.pendingCleaning > 0) {
                 this.initCleanup(this.pendingCleaning);
                 this.pendingCleaning = 0;
@@ -28,23 +36,19 @@ export default class BufferController extends Event {
                 return;
             }
         });
-        
-        this.sourceBuffer.addEventListener('error', () => {
-            this.dispatch('error', {
-                type: this.type,
-                name: 'buffer',
-                error: 'buffer error',
-            });
-        });
     }
     
     feed (data) {
-        this.queue = appendByteArray(this.queue, data);
+        return new Promise((resolve) => {
+            this.queue = appendByteArray(this.queue, data);
+            resolve(this);
+        });
     }
     
     destroy () {
         this.queue = null;
         this.sourceBuffer = null;
+        
         this.offAll();
     }
     
@@ -59,21 +63,22 @@ export default class BufferController extends Event {
             this.sourceBuffer.appendBuffer(this.queue);
             this.queue = new Uint8Array();
         }
-        catch (e) {
+        catch (exception) {
             let name = 'unexpectedError';
-            if (e.name === 'QuotaExceededError') {
+            if (exception.name === 'QuotaExceededError') {
                 debug.log(`${this.type} buffer quota full`);
                 name = 'QuotaExceeded';
             }
             else {
-                debug.error(`Error occured while appending ${this.type} buffer - ${e.name}: ${e.message}`);
+                debug.error(`Error occured while appending ${this.type} buffer - ${exception.name}: ${exception.message}`);
                 name = 'InvalidStateError';
             }
             
             this.dispatch('error', {
-                type: this.type,
                 name: name,
+                type: this.type,
                 error: 'buffer error',
+                details: exception,
             });
         }
     }
@@ -85,7 +90,6 @@ export default class BufferController extends Event {
         }
         
         let range = this.cleanRanges.shift();
-        debug.log(`${this.type} remove range [${range[0]} - ${range[1]})`);
         this.cleaning = true;
         this.sourceBuffer.remove(range[0], range[1]);
     }

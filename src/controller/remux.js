@@ -64,48 +64,28 @@ export default class RemuxController extends Event {
                 let track = this.tracks[type];
                 let pay = track.getPayload();
                 
-                if (pay && pay.byteLength) {
-                    const moof = MP4.moof(this.seq, track.dts, track.mp4track);
-                    const mdat = MP4.mdat(pay);
-                    const data = {
-                        dts: track.dts,
-                        type: type,
-                        payload: appendByteArray(moof, mdat),
-                    };
-                    
-                    if (type === 'video') {
-                        data.fps = track.mp4track.fps;
-                        data.duration = this.duration;
-                        data.timescale = this.timescale;
-                    }
-                    
-                    this.dispatch('buffer', data);
-                    this.#estimateFPS();
-                    
-                    let duration = secToTime(track.dts / this.timescale);
-                    debug.log(`put segment (${type}): dts: ${track.dts} frames: ${track.mp4track.samples.length} second: ${duration}`);
-                    
-                    track.flush();
-                    
-                    this.seq ++;
+                // always feed mp4
+                
+                const moof = MP4.moof(this.seq ++, track.dts, track.mp4track);
+                const mdat = MP4.mdat(pay || new Uint8Array());
+                const data = {
+                    dts: track.dts,
+                    type: type,
+                    payload: appendByteArray(moof, mdat),
+                };
+                
+                // additional video data
+                if (type === 'video') {
+                    data.fps = track.mp4track.fps;
+                    data.duration = this.duration;
+                    data.timescale = this.timescale;
                 }
-                else {
-                    // empty `moof` for continuity
-                    const moof = MP4.moof(this.seq, track.dts, track.mp4track);
-                    const data = {
-                        dts: track.dts,
-                        type: type,
-                        payload: moof,
-                    };
-                    
-                    if (type === 'video') {
-                        data.fps = track.mp4track.fps;
-                        data.duration = this.duration;
-                        data.timescale = this.timescale;
-                    }
-                    
-                    this.dispatch('buffer', data);
-                }
+                
+                this.dispatch('buffer', data);
+                this.#estimateFPS();
+                
+                debug.log(`put segment (${type}): dts: ${track.dts} frames: ${track.mp4track.samples.length} second: ${secToTime(track.dts / this.timescale)}`);
+                track.flush();
             }
         }
     }

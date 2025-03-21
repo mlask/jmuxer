@@ -594,7 +594,7 @@ export class H265Parser {
         this.track.height = config.height;
         this.track.segmentCodec = 'hevc';
         
-        console.log(`H265Parser: codec: ${this.track.codec}`);
+        console.log(`h265 codec: ${this.track.codec}`);
     }
     
     parseVPS (data) {
