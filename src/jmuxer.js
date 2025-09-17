@@ -34,6 +34,7 @@ export default class JMuxer extends Event {
         };
         
         this.env = typeof process === 'object' && typeof window === 'undefined' ? 'node' : 'browser';
+        this.hevc = undefined;
         this.isReset = false;
         this.options = Object.assign({}, defaults, options);
         
@@ -339,8 +340,10 @@ export default class JMuxer extends Event {
         }
         
         for (const nalu of nalus) {
-            const unit = Stream.NalUnitIsH265(nalu) ? new H265NalUnit(nalu) : new H264NalUnit(nalu);
+            if (typeof this.hevc === 'undefined')
+                this.hevc = Stream.NalUnitIsH265(nalu);
             
+            const unit = this.hevc ? new H265NalUnit(nalu) : new H264NalUnit(nalu);
             if (units.length && vcl && (unit.isfmb || !unit.isvcl)) {
                 frames.push({
                     units,

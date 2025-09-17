@@ -465,10 +465,6 @@ export class H265Parser {
         
         let push = false;
         
-        if (this.remuxer.readyToDecode && !unit.isfmb && unit.isvcl) {
-            this.parseSegment(unit.getType(), unit.getPayload());
-        }
-        
         switch (unit.getType()) {
             case H265NalUnit.NALU_TYPE_TRAIL_N:
             case H265NalUnit.NALU_TYPE_TRAIL_R:
@@ -613,51 +609,6 @@ export class H265Parser {
         
         this.track.vps = [vps];
         this.track.params = Object.assign(this.track.params, config);
-    }
-    
-    parseSegment (unitType, data) {
-        const eg = new ExpGolomb(data, true);
-        
-        // remove NALu Header
-        eg.readUByte(2);
-        
-        // slice_segment_header
-        const first_slice_segment_in_pic_flag = eg.readBoolean();
-        
-        // skip: no_output_of_prior_pics_flag, slice_pic_parameter_set_id
-        if (unitType >= H265NalUnit.NALU_TYPE_BLA_W_LP && unitType <= H265NalUnit.NALU_TYPE_RSV_IRAP_VCL23)
-            eg.skipBits(1); // no_output_of_prior_pics_flag
-        eg.skipUEG();
-        
-        let dependent_slice_segment_flag = false;
-        let slice_segment_address;
-        let slice_pic_order_cnt_lsb;
-            
-        if (!first_slice_segment_in_pic_flag) {
-            if (this.track.params.dependent_slice_segments_enabled_flag) {
-                dependent_slice_segment_flag = eg.readBoolean();
-            }
-            slice_segment_address = eg.readBits(this.track.params.log2_max_pic_order_cnt_lsb_minus4 + 4);
-        }
-        
-        if (!dependent_slice_segment_flag) {
-            eg.skipBits(this.track.params.num_extra_slice_header_bits); // slice_reserved_flags
-            eg.skipUEG(); // slice_type
-            eg.skipBits(this.track.params.output_flag_present_flag || 0); // pic_output_flag
-            eg.skipBits((this.track.params.separate_colour_plane_flag || 0) === 1 ? 2 : 0); // colour_plane_id
-            
-            if (unitType !== H265NalUnit.NALU_TYPE_IDR_W_RADL && unitType !== H265NalUnit.NALU_TYPE_IDR_N_LP) {
-                slice_pic_order_cnt_lsb = eg.read_bits(this.track.params.log2_max_pic_order_cnt_lsb_minus4 + 4);
-            }
-        }
-        
-        this.track.params = Object.assign(this.track.params, {
-            first_slice_segment_in_pic_flag,
-            dependent_slice_segment_flag,
-            slice_pic_order_cnt_lsb,
-            slice_segment_address,
-            slice_type,
-        });
     }
     
     #discardEPB (data) {
