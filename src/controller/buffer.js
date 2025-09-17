@@ -90,7 +90,6 @@ export default class BufferController extends Event {
         }
         
         let range = this.cleanRanges.shift();
-        console.log('doCleanup', range[0], range[1]);
         
         this.cleaning = true;
         this.sourceBuffer.remove(range[0], range[1]);
