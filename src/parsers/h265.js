@@ -17,9 +17,9 @@ export class H265Parser {
         // PPS
         eg.readUEG();// pic_parameter_set_id
         eg.readUEG(); // seq_parameter_set_id
-        eg.readBoolean(); // dependent_slice_segments_enabled_flag
-        eg.readBoolean(); // output_flag_present_flag
-        eg.readBits(3); // num_extra_slice_header_bits
+        const dependent_slice_segments_enabled_flag = eg.readBoolean(); // dependent_slice_segments_enabled_flag
+        const output_flag_present_flag = eg.readBoolean(); // output_flag_present_flag
+        const num_extra_slice_header_bits = eg.readBits(3); // num_extra_slice_header_bits
         eg.readBoolean(); // sign_data_hiding_enabled_flag
         eg.readBoolean(); // cabac_init_present_flag
         eg.readUEG(); // num_ref_idx_l0_default_active_minus1
@@ -52,6 +52,9 @@ export class H265Parser {
         
         return {
             parallelism_type,
+            output_flag_present_flag,
+            num_extra_slice_header_bits,
+            dependent_slice_segments_enabled_flag,
         };
     }
     
@@ -112,8 +115,9 @@ export class H265Parser {
         
         eg.readUEG(); // seq_parameter_set_id
         const chroma_format_idc = eg.readUEG();
+        let separate_colour_plane_flag = false;
         if (chroma_format_idc === 3) {
-            eg.skipBits(1); // separate_colour_plane_flag
+            separate_colour_plane_flag = eg.readBoolean(); // separate_colour_plane_flag
         }
         const pic_width_in_luma_samples = eg.readUEG();
         const pic_height_in_luma_samples = eg.readUEG();
@@ -130,7 +134,7 @@ export class H265Parser {
         }
         const bit_depth_luma_minus8 = eg.readUEG();
         const bit_depth_chroma_minus8 = eg.readUEG();
-        const log_2_max_pic_order_cnt_lsb_minus4 = eg.readUEG();
+        const log2_max_pic_order_cnt_lsb_minus4 = eg.readUEG();
         const sps_sub_layer_ordering_info_present_flag = eg.readBoolean();
         for (let i = sps_sub_layer_ordering_info_present_flag ? 0 : sps_max_sub_layers_minus1; i <= sps_max_sub_layers_minus1; i ++) {
             eg.skipUEG(); // max_dec_pic_buffering_minus1[i]
@@ -231,7 +235,7 @@ export class H265Parser {
         if (long_term_ref_pics_present_flag) {
             const num_long_term_ref_pics_sps = eg.readUEG();
             for (let i = 0; i < num_long_term_ref_pics_sps; i ++) {
-                for (let j = 0; j < log_2_max_pic_order_cnt_lsb_minus4 + 4; j ++) {
+                for (let j = 0; j < log2_max_pic_order_cnt_lsb_minus4 + 4; j ++) {
                     eg.readBits(1);
                 }
                 eg.readBits(1);
@@ -429,6 +433,8 @@ export class H265Parser {
                 sar_width,
                 sar_height,
             ],
+            separate_colour_plane_flag,
+            log2_max_pic_order_cnt_lsb_minus4,
         };
     }
     
@@ -458,6 +464,10 @@ export class H265Parser {
             return false;
         
         let push = false;
+        
+        if (this.remuxer.readyToDecode && !unit.isfmb && unit.isvcl) {
+            this.parseSegment(unit.getType(), unit.getPayload());
+        }
         
         switch (unit.getType()) {
             case H265NalUnit.NALU_TYPE_TRAIL_N:
@@ -572,7 +582,7 @@ export class H265Parser {
         this.track.sps = [sps];
         this.track.params = Object.assign(this.track.params, config);
         
-        const profile_space_string = config.general_profile_space ? ['A', 'B', 'C'][config.general_profile_space] : '';
+        const profile_space_string = config.general_profile_space ? (['A', 'B', 'C'][config.general_profile_space] || `(${config.general_profile_space})`) : '';
         const profile_compatibility_buf = (config.general_profile_compatibility_flags[0] << 24) | (config.general_profile_compatibility_flags[1] << 16) | (config.general_profile_compatibility_flags[2] << 8) | config.general_profile_compatibility_flags[3];
         let profile_compatibility_rev = 0;
         for (let i = 0; i < 32; i ++) {
@@ -603,6 +613,51 @@ export class H265Parser {
         
         this.track.vps = [vps];
         this.track.params = Object.assign(this.track.params, config);
+    }
+    
+    parseSegment (unitType, data) {
+        const eg = new ExpGolomb(data, true);
+        
+        // remove NALu Header
+        eg.readUByte(2);
+        
+        // slice_segment_header
+        const first_slice_segment_in_pic_flag = eg.readBoolean();
+        
+        // skip: no_output_of_prior_pics_flag, slice_pic_parameter_set_id
+        if (unitType >= H265NalUnit.NALU_TYPE_BLA_W_LP && unitType <= H265NalUnit.NALU_TYPE_RSV_IRAP_VCL23)
+            eg.skipBits(1); // no_output_of_prior_pics_flag
+        eg.skipUEG();
+        
+        let dependent_slice_segment_flag = false;
+        let slice_segment_address;
+        let slice_pic_order_cnt_lsb;
+            
+        if (!first_slice_segment_in_pic_flag) {
+            if (this.track.params.dependent_slice_segments_enabled_flag) {
+                dependent_slice_segment_flag = eg.readBoolean();
+            }
+            slice_segment_address = eg.readBits(this.track.params.log2_max_pic_order_cnt_lsb_minus4 + 4);
+        }
+        
+        if (!dependent_slice_segment_flag) {
+            eg.skipBits(this.track.params.num_extra_slice_header_bits); // slice_reserved_flags
+            eg.skipUEG(); // slice_type
+            eg.skipBits(this.track.params.output_flag_present_flag || 0); // pic_output_flag
+            eg.skipBits((this.track.params.separate_colour_plane_flag || 0) === 1 ? 2 : 0); // colour_plane_id
+            
+            if (unitType !== H265NalUnit.NALU_TYPE_IDR_W_RADL && unitType !== H265NalUnit.NALU_TYPE_IDR_N_LP) {
+                slice_pic_order_cnt_lsb = eg.read_bits(this.track.params.log2_max_pic_order_cnt_lsb_minus4 + 4);
+            }
+        }
+        
+        this.track.params = Object.assign(this.track.params, {
+            first_slice_segment_in_pic_flag,
+            dependent_slice_segment_flag,
+            slice_pic_order_cnt_lsb,
+            slice_segment_address,
+            slice_type,
+        });
     }
     
     #discardEPB (data) {

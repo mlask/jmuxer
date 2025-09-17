@@ -28,6 +28,7 @@ export default class JMuxer extends Event {
             onData: function () {}, // function called when data is ready to be sent
             onReady: function () {}, // function called when MSE is ready to accept frames
             onError: function () {}, // function called when jmuxer encounters any buffer related errors
+            onUnsupportedCodec: function () {}, //function called when jmuxer encounters unsupported video codec
             onMissingVideoFrames: function () {}, // function called when jmuxer encounters any missing video frames
             onMissingAudioFrames: function () {}, // function called when jmuxer encounters any missing audio frames
         };
@@ -260,6 +261,13 @@ export default class JMuxer extends Event {
             let track = this.remuxController.tracks[type];
             if (!JMuxer.isSupported(`${type}/mp4; codecs="${track.mp4track.codec}"`)) {
                 debug.error('Browser does not support codec');
+                if (typeof this.options.onUnsupportedCodec === 'function') {
+                    this.options.onUnsupportedCodec.call(this, {
+                        track: track,
+                        codec_string: track.mp4track.codec,
+                        full_codec_string: `${type}/mp4; codecs="${track.mp4track.codec}"`,
+                    });
+                }
                 return false;
             }
             let sb = this.mediaSource.addSourceBuffer(`${type}/mp4; codecs="${track.mp4track.codec}"`);
@@ -455,7 +463,7 @@ export default class JMuxer extends Event {
         if (typeof this.options.onReady === 'function')
             this.options.onReady.call(null, this.isReset, this.mediaSource);
         
-        if (this.remuxController.duration === -1 || this.options.live) {
+        if (this.options.live || this.remuxController?.duration === -1) {
             if (!!this.mediaSource.setLiveSeekableRange && !!this.mediaSource.clearLiveSeekableRange) {
                 this.mediaSource.duration = Infinity;
             }

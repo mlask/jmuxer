@@ -34,11 +34,18 @@
  }
 
  window.onload = function() {
+    document.querySelectorAll('video').forEach((video) => {
+        video.addEventListener('error', (video) => {
+            console.log('video element error', video.currentTarget.error);
+        });
+    });
     document.getElementById('play').addEventListener('click', () => {
         document.getElementById('play').remove();
         
         // player1
-        var socketURL1 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491146'; // h265
+        //var socketURL1 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491146'; // h265
+        /*
+        var socketURL1 = 'wss://waw-v14.safestar.cloud/vws/AAEAAABllOLnObfSwy-8h6t4e7R1SGE7E2bNfOkBAAAb?action=stream&id=1255432';
         var jmuxer1 = new JMuxer({
             node: 'player1',
             mode: 'video',
@@ -65,9 +72,12 @@
         ws1.addEventListener('error', (event) => {
             console.log('player1: Socket Error', event);
         });
+        */
         
         // player2
-        var socketURL2 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491141'; // h265
+        //var socketURL2 = 'wss://devvideo2.safestar.pl/vws/DUN_HYcPCWwaugEAAACcFAAAQnPcZ2NjBXzjtCd81x8O?action=stream&id=491141'; // h265
+        //var socketURL2 = 'wss://waw-v26.safestar.cloud/vws/wy-8h6t4e7R1SGE7E2bNfOkBAAAAAQAAAJqW4uc5t9IH?action=stream&id=1255436';
+        var socketURL2 = 'wss://v11.video.konsalnet.pl/video2/vws/OT3jqxMAwIE86Fu1j6MVZDTLjCMBAAAAAQAAAKDY4_cE?action=stream&id=310259&sub=201';
         var jmuxer2 = new JMuxer({
             node: 'player2',
             mode: 'video',
@@ -77,6 +87,9 @@
             readFpsFromTrack: true,
             onError: function(data) {
                 console.log('player2: Buffer error encountered', data);
+            },
+            onUnsupportedCodec: function (data) {
+                console.log('player2: Unsupported codec', data);
             },
         });
         var ws2 = new WebSocket(socketURL2);
